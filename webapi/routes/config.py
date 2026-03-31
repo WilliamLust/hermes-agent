@@ -20,8 +20,14 @@ class ConfigPatch(BaseModel):
 @router.get("", response_model=ConfigResponse)
 async def get_web_config() -> ConfigResponse:
     runtime = get_runtime_agent_kwargs()
+    raw_model = get_runtime_model()
+    # Upstream now returns dict {'default': 'model', 'provider': 'x'} instead of str
+    if isinstance(raw_model, dict):
+        model_str = raw_model.get("default", raw_model.get("model", str(raw_model)))
+    else:
+        model_str = raw_model
     return ConfigResponse(
-        model=get_runtime_model(),
+        model=model_str,
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         base_url=runtime.get("base_url"),

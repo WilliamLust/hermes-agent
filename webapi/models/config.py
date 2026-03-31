@@ -4,7 +4,7 @@ from webapi.models.common import WebAPIModel
 
 
 class ConfigResponse(WebAPIModel):
-    model: str
+    model: str | dict | None = None
     provider: str | None = None
     api_mode: str | None = None
     base_url: str | None = None
