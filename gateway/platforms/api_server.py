@@ -941,21 +941,25 @@ class APIServerAdapter(BasePlatformAdapter):
             text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
             return text[:limit] + ("..." if len(text) > limit else "")
 
+        run_id = f"run_{uuid.uuid4().hex}"
+
         def _on_delta(delta):
             if delta:
                 _queue_event(
                     "assistant.delta",
-                    {"message_id": assistant_message_id, "delta": delta},
+                    {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": delta},
                 )
 
         def _on_tool_progress(name, preview, args):
             if name == "_thinking":
                 _queue_event(
                     "tool.progress",
-                    {"message_id": assistant_message_id, "delta": preview},
+                    {"session_id": session_id, "run_id": run_id, "message_id": assistant_message_id, "delta": preview},
                 )
                 return
             payload = {
+                "session_id": session_id,
+                "run_id": run_id,
                 "tool_name": name,
                 "preview": preview,
                 "args": args,
@@ -999,16 +1003,25 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
-            await response.write(_encode_sse("session", {
+            user_message_id = f"msg_user_{uuid.uuid4().hex}"
+            await response.write(_encode_sse("session.created", {
                 "session_id": session_id,
+                "run_id": run_id,
                 "title": session.get("title") or "New Chat",
             }))
             await response.write(_encode_sse("run.started", {
-                "user_message": message,
+                "session_id": session_id,
+                "run_id": run_id,
+                "user_message": {
+                    "id": user_message_id,
+                    "role": "user",
+                    "content": message,
+                },
             }))
             await response.write(_encode_sse("message.started", {
-                "message_id": assistant_message_id,
-                "role": "assistant",
+                "session_id": session_id,
+                "run_id": run_id,
+                "message": {"id": assistant_message_id, "role": "assistant"},
             }))
 
             while True:
@@ -1040,6 +1053,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_id = item.get("tool_call_id")
                 tool_meta = tools.get(tool_id, {})
                 await response.write(_encode_sse("tool.completed", {
+                    "session_id": session_id,
+                    "run_id": run_id,
                     "tool_call_id": tool_id,
                     "tool_name": tool_meta.get("tool_name") or item.get("tool_name") or "unknown",
                     "args": tool_meta.get("args"),
@@ -1047,6 +1062,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 }))
 
             await response.write(_encode_sse("assistant.completed", {
+                "session_id": session_id,
+                "run_id": run_id,
                 "message_id": assistant_message_id,
                 "content": result.get("final_response") or "",
                 "completed": result.get("completed", False),
@@ -1054,13 +1071,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "interrupted": result.get("interrupted", False),
             }))
             await response.write(_encode_sse("run.completed", {
+                "session_id": session_id,
+                "run_id": run_id,
                 "message_id": assistant_message_id,
                 "completed": result.get("completed", False),
                 "partial": result.get("partial", False),
                 "interrupted": result.get("interrupted", False),
                 "api_calls": result.get("api_calls"),
             }))
-            await response.write(_encode_sse("done", {}))
+            await response.write(_encode_sse("done", {"session_id": session_id, "run_id": run_id, "state": "final"}))
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             agent = agent_ref[0]
             if agent is not None:
