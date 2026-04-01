@@ -850,6 +850,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_message,
                 session_id=session_id,
             )
+            agent._session_db = db  # Enable session persistence
             result = agent.run_conversation(
                 message,
                 conversation_history=history,
@@ -985,6 +986,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_on_delta,
                     tool_progress_callback=_on_tool_progress,
                 )
+                agent._session_db = db  # Enable session persistence
                 agent_ref[0] = agent
                 return agent.run_conversation(
                     message,
