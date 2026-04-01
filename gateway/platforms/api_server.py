@@ -735,7 +735,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = request.match_info["session_id"]
         db = self._get_session_db()
         if db.get_session(session_id) is None:
-            return web.json_response({"error": "Session not found"}, status=404)
+            db.ensure_session(session_id, source="web")
         items = db.get_messages(session_id)
         return web.json_response({"items": items, "total": len(items)})
 
@@ -829,7 +829,8 @@ class APIServerAdapter(BasePlatformAdapter):
         db = self._get_session_db()
         session = self._normalize_session_record(db.get_session(session_id))
         if session is None:
-            return web.json_response({"error": "Session not found"}, status=404)
+            db.ensure_session(session_id, source="web")
+            session = self._normalize_session_record(db.get_session(session_id)) or {}
 
         try:
             body = await request.json()
@@ -893,7 +894,8 @@ class APIServerAdapter(BasePlatformAdapter):
         db = self._get_session_db()
         session = self._normalize_session_record(db.get_session(session_id))
         if session is None:
-            return web.json_response({"error": "Session not found"}, status=404)
+            db.ensure_session(session_id, source="web")
+            session = self._normalize_session_record(db.get_session(session_id)) or {}
 
         try:
             body = await request.json()
