@@ -45,6 +45,11 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_cli.config import load_config, save_config
+from hermes_cli.models import curated_models_for_provider, list_available_providers
+from hermes_state import SessionDB
+from tools.memory_tool import MemoryStore
+from tools.skills_tool import skill_view, skills_categories, skills_list
 
 logger = logging.getLogger(__name__)
 
@@ -389,11 +394,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
-        self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Creation timestamps for orphaned-run TTL sweep
-        self._run_streams_created: Dict[str, float] = {}
-        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db: Optional[SessionDB] = None
+        self._memory_store: Optional[MemoryStore] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -485,6 +487,63 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    def _get_session_db(self) -> SessionDB:
+        """Create the session DB lazily."""
+        if self._session_db is None:
+            self._session_db = SessionDB()
+        return self._session_db
+
+    def _get_memory_store(self) -> MemoryStore:
+        """Create the memory store lazily."""
+        if self._memory_store is None:
+            self._memory_store = MemoryStore()
+            self._memory_store.load_from_disk()
+        return self._memory_store
+
+    @staticmethod
+    def _normalize_session_record(session: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Parse serialized session fields into API-friendly JSON."""
+        if session is None:
+            return None
+        normalized = dict(session)
+        model_config = normalized.get("model_config")
+        if model_config:
+            try:
+                normalized["model_config"] = json.loads(model_config)
+            except (TypeError, json.JSONDecodeError):
+                pass
+        return normalized
+
+    @staticmethod
+    def _current_model_settings(config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract model/provider/base_url/api_mode from config.yaml."""
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            return {
+                "model": str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
+                "provider": str(model_cfg.get("provider") or "").strip(),
+                "api_mode": str(model_cfg.get("api_mode") or "").strip(),
+                "base_url": str(model_cfg.get("base_url") or "").strip(),
+            }
+        if isinstance(model_cfg, str):
+            return {
+                "model": model_cfg.strip(),
+                "provider": "",
+                "api_mode": "",
+                "base_url": "",
+            }
+        return {"model": "", "provider": "", "api_mode": "", "base_url": ""}
+
+    @staticmethod
+    def _parse_int(value: Any, default: int, minimum: int = 0) -> int:
+        """Parse an integer query parameter with bounds."""
+        if value in (None, ""):
+            return default
+        parsed = int(value)
+        if parsed < minimum:
+            raise ValueError(f"Value must be >= {minimum}")
+        return parsed
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -585,6 +644,355 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             ],
         })
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            limit = self._parse_int(request.query.get("limit"), 50)
+            offset = self._parse_int(request.query.get("offset"), 0)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        source = (request.query.get("source") or "").strip() or None
+        db = self._get_session_db()
+        items = [
+            self._normalize_session_record(item)
+            for item in db.list_sessions_rich(source=source, limit=limit, offset=offset)
+        ]
+        total = db.session_count(source=source)
+        return web.json_response({"items": items, "total": total})
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create a new session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        title = body.get("title")
+        source = str(body.get("source") or "api_server").strip() or "api_server"
+        model = body.get("model")
+        system_prompt = body.get("system_prompt")
+        session_id = f"sess_{uuid.uuid4().hex}"
+        db = self._get_session_db()
+
+        try:
+            db.create_session(
+                session_id=session_id,
+                source=source,
+                model=model,
+                system_prompt=system_prompt,
+            )
+            if title is not None:
+                db.set_session_title(session_id, str(title))
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(session_id))
+        return web.json_response({"session": session})
+
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — search messages across sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        query = (request.query.get("q") or "").strip()
+        if not query:
+            return web.json_response({"error": "Missing query parameter: q"}, status=400)
+        try:
+            limit = self._parse_int(request.query.get("limit"), 20)
+            offset = self._parse_int(request.query.get("offset"), 0)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+        results = self._get_session_db().search_messages(query=query, limit=limit, offset=offset)
+        return web.json_response({"query": query, "count": len(results), "results": results})
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id} — fetch one session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        session = self._normalize_session_record(self._get_session_db().get_session(session_id))
+        if session is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+        return web.json_response({"session": session})
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — fetch session messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        if db.get_session(session_id) is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+        items = db.get_messages(session_id)
+        return web.json_response({"items": items, "total": len(items)})
+
+    async def _handle_update_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — update a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        if db.get_session(session_id) is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        try:
+            if "title" in body:
+                db.set_session_title(session_id, body.get("title"))
+            if "system_prompt" in body:
+                db.update_system_prompt(session_id, body.get("system_prompt"))
+            if "end_reason" in body:
+                db.end_session(session_id, str(body.get("end_reason") or "updated"))
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(session_id))
+        return web.json_response({"session": session})
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id} — delete a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        deleted = self._get_session_db().delete_session(session_id)
+        if not deleted:
+            return web.json_response({"error": "Session not found"}, status=404)
+        return web.json_response({"ok": True})
+
+    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — clone a session and its messages."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        original = db.get_session(session_id)
+        if original is None:
+            return web.json_response({"error": "Session not found"}, status=404)
+
+        forked_id = f"sess_{uuid.uuid4().hex}"
+        try:
+            db.create_session(
+                session_id=forked_id,
+                source=original.get("source") or "api_server",
+                model=original.get("model"),
+                system_prompt=original.get("system_prompt"),
+                user_id=original.get("user_id"),
+                parent_session_id=session_id,
+            )
+            messages = db.get_messages(session_id)
+            for message in messages:
+                db.append_message(
+                    session_id=forked_id,
+                    role=message.get("role"),
+                    content=message.get("content"),
+                    tool_name=message.get("tool_name"),
+                    tool_calls=message.get("tool_calls"),
+                    tool_call_id=message.get("tool_call_id"),
+                    token_count=message.get("token_count"),
+                    finish_reason=message.get("finish_reason"),
+                    reasoning=message.get("reasoning"),
+                )
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        session = self._normalize_session_record(db.get_session(forked_id))
+        return web.json_response({"session": session, "forked_from": session_id})
+
+    async def _handle_get_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — read current memory state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        target = (request.query.get("target") or "all").strip().lower()
+        if target not in {"all", "memory", "user"}:
+            return web.json_response({"error": "target must be one of: all, memory, user"}, status=400)
+
+        store = self._get_memory_store()
+        store.load_from_disk()
+        targets = []
+        if target in {"all", "memory"}:
+            targets.append({
+                "target": "memory",
+                "entries": store.memory_entries,
+                "entry_count": len(store.memory_entries),
+            })
+        if target in {"all", "user"}:
+            targets.append({
+                "target": "user",
+                "entries": store.user_entries,
+                "entry_count": len(store.user_entries),
+            })
+        return web.json_response({"targets": targets})
+
+    async def _handle_add_memory(self, request: "web.Request") -> "web.Response":
+        """POST /api/memory — add a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        content = str(body.get("content") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().add(target, content)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_replace_memory(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/memory — replace a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        old_text = str(body.get("old_text") or "")
+        content = str(body.get("content") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().replace(target, old_text, content)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_delete_memory(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/memory — delete a memory entry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        target = str(body.get("target") or "").strip().lower()
+        old_text = str(body.get("old_text") or "")
+        if target not in {"memory", "user"}:
+            return web.json_response({"error": "target must be 'memory' or 'user'"}, status=400)
+        result = self._get_memory_store().remove(target, old_text)
+        status = 200 if result.get("success") else 400
+        return web.json_response(result, status=status)
+
+    async def _handle_list_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills — list skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        category = (request.query.get("category") or "").strip() or None
+        return web.json_response(json.loads(skills_list(category=category)))
+
+    async def _handle_skill_categories(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/categories — list skill categories."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response(json.loads(skills_categories()))
+
+    async def _handle_view_skill(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/{name} — fetch skill details."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        file_path = (request.query.get("file_path") or "").strip() or None
+        return web.json_response(json.loads(skill_view(name, file_path=file_path)))
+
+    async def _handle_get_config(self, request: "web.Request") -> "web.Response":
+        """GET /api/config — fetch the current config."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        config = load_config()
+        current = self._current_model_settings(config)
+        return web.json_response({
+            "model": current["model"],
+            "provider": current["provider"],
+            "api_mode": current["api_mode"],
+            "base_url": current["base_url"],
+            "config": config,
+        })
+
+    async def _handle_update_config(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/config — update model/provider/base_url settings."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        config = load_config()
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            updated_model_cfg = dict(model_cfg)
+        elif isinstance(model_cfg, str) and model_cfg.strip():
+            updated_model_cfg = {"default": model_cfg.strip()}
+        else:
+            updated_model_cfg = {}
+
+        if "model" in body:
+            updated_model_cfg["default"] = str(body.get("model") or "").strip()
+        if "provider" in body:
+            updated_model_cfg["provider"] = str(body.get("provider") or "").strip()
+        if "base_url" in body:
+            updated_model_cfg["base_url"] = str(body.get("base_url") or "").strip()
+
+        config["model"] = updated_model_cfg
+        try:
+            save_config(config)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+        current = self._current_model_settings(config)
+        return web.json_response({
+            "ok": True,
+            "model": current["model"],
+            "provider": current["provider"],
+            "base_url": current["base_url"],
+        })
+
+    async def _handle_available_models(self, request: "web.Request") -> "web.Response":
+        """GET /api/available-models — list provider models and available providers."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        config = load_config()
+        current = self._current_model_settings(config)
+        provider = (request.query.get("provider") or current["provider"] or "openrouter").strip()
+        models = [
+            {"id": model_id, "description": description}
+            for model_id, description in curated_models_for_provider(provider)
+        ]
+        providers = list_available_providers()
+        return web.json_response({"provider": provider, "models": models, "providers": providers})
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -1798,6 +2206,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+<<<<<<< HEAD
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
@@ -1835,6 +2244,26 @@ class APIServerAdapter(BasePlatformAdapter):
                         return False
                 except ImportError:
                     pass
+=======
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_update_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_get("/api/memory", self._handle_get_memory)
+            self._app.router.add_post("/api/memory", self._handle_add_memory)
+            self._app.router.add_patch("/api/memory", self._handle_replace_memory)
+            self._app.router.add_delete("/api/memory", self._handle_delete_memory)
+            self._app.router.add_get("/api/skills", self._handle_list_skills)
+            self._app.router.add_get("/api/skills/categories", self._handle_skill_categories)
+            self._app.router.add_get("/api/skills/{name}", self._handle_view_skill)
+            self._app.router.add_get("/api/config", self._handle_get_config)
+            self._app.router.add_patch("/api/config", self._handle_update_config)
+            self._app.router.add_get("/api/available-models", self._handle_available_models)
+>>>>>>> bc9f1999 (feat(api-server): add sessions, memory, skills, config endpoints)
 
             # Port conflict detection — fail fast if port is already in use
             try:
@@ -1880,6 +2309,10 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        if self._session_db is not None:
+            self._session_db.close()
+            self._session_db = None
+        self._memory_store = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(
