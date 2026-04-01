@@ -567,6 +567,57 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent creation helper
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_user_content(
+        text: str, attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> tuple:
+        """Build multimodal content from text + image attachments.
+
+        Returns (user_content, persist_text) where user_content is either
+        a plain string or a list of content parts for multimodal input.
+        """
+        if not attachments:
+            return text, text
+
+        image_parts: List[Dict[str, Any]] = []
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            mime = ""
+            for key in ("contentType", "mimeType", "mediaType"):
+                val = att.get(key)
+                if isinstance(val, str) and val.strip():
+                    mime = val.strip()
+                    break
+            if not mime.startswith("image/"):
+                continue
+            content = ""
+            for key in ("content", "base64", "data"):
+                val = att.get(key)
+                if isinstance(val, str) and val.strip():
+                    content = val.strip()
+                    break
+            if not content:
+                # Try dataUrl format: data:image/png;base64,...
+                data_url = att.get("dataUrl", "")
+                if isinstance(data_url, str) and data_url.startswith("data:"):
+                    content = data_url.split(",", 1)[-1] if "," in data_url else ""
+            if not content:
+                continue
+            image_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{content}"},
+            })
+
+        if not image_parts:
+            return text, text
+
+        content_parts: List[Dict[str, Any]] = []
+        if text.strip():
+            content_parts.append({"type": "text", "text": text})
+        content_parts.extend(image_parts)
+        return content_parts, text
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -841,6 +892,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(message, str):
             return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
 
+        user_content, persist_text = self._build_user_content(message, body.get("attachments"))
+
         model = body.get("model") or session.get("model") or "hermes-agent"
         system_message = body.get("system_message")
         history = db.get_messages_as_conversation(session_id)
@@ -853,8 +906,9 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             agent._session_db = db  # Enable session persistence
             result = agent.run_conversation(
-                message,
+                user_content,
                 conversation_history=history,
+                persist_user_message=persist_text,
             )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -905,6 +959,9 @@ class APIServerAdapter(BasePlatformAdapter):
         message = body.get("message")
         if not isinstance(message, str):
             return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
+
+        # Build multimodal content if image attachments are present
+        user_content, persist_text = self._build_user_content(message, body.get("attachments"))
 
         system_message = body.get("system_message")
         history = db.get_messages_as_conversation(session_id)
@@ -987,8 +1044,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent._session_db = db  # Enable session persistence
                 agent_ref[0] = agent
                 return agent.run_conversation(
-                    message,
+                    user_content,
                     conversation_history=history,
+                    persist_user_message=persist_text,
                 )
 
             return await loop.run_in_executor(None, _run)
