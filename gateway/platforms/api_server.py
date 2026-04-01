@@ -910,12 +910,8 @@ class APIServerAdapter(BasePlatformAdapter):
         history = db.get_messages_as_conversation(session_id)
         assistant_message_id = f"msg_asst_{uuid.uuid4().hex}"
 
-        # Persist user message to session BEFORE running agent
-        # so it survives even if the agent fails/interrupts
-        try:
-            db.append_message(session_id=session_id, role="user", content=message)
-        except Exception:
-            pass  # Non-fatal — agent will still work
+        # Note: user message persistence is handled by AIAgent._flush_messages_to_session_db
+        # Don't double-persist here or messages will appear twice
 
         import queue as _q
         stream_q: _q.Queue = _q.Queue()
