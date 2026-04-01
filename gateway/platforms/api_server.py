@@ -907,6 +907,13 @@ class APIServerAdapter(BasePlatformAdapter):
         history = db.get_messages_as_conversation(session_id)
         assistant_message_id = f"msg_asst_{uuid.uuid4().hex}"
 
+        # Persist user message to session BEFORE running agent
+        # so it survives even if the agent fails/interrupts
+        try:
+            db.append_message(session_id=session_id, role="user", content=message)
+        except Exception:
+            pass  # Non-fatal — agent will still work
+
         import queue as _q
         stream_q: _q.Queue = _q.Queue()
 
@@ -1290,6 +1297,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        # Fast-path for capability probes (max_tokens=1 or model='test')
+        # Return a minimal valid response so frontends detect the endpoint
+        max_tokens = body.get("max_tokens")
+        probe_model = body.get("model", "")
+        if max_tokens == 1 or probe_model == "test":
+            return web.json_response({
+                "id": f"chatcmpl-probe-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": probe_model or "hermes-agent",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1},
+            })
 
         stream = body.get("stream", False)
 
