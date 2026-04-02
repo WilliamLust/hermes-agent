@@ -3542,6 +3542,29 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
+                # Preserve multimodal content arrays (image_url parts) for user messages
+                if role == "user" and isinstance(content, list):
+                    # Convert OpenAI chat-format content parts to Responses API format
+                    responses_content: List[Dict[str, Any]] = []
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") == "text":
+                            responses_content.append({
+                                "type": "input_text",
+                                "text": part.get("text", ""),
+                            })
+                        elif part.get("type") == "image_url":
+                            image_url = part.get("image_url", {})
+                            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                            if url:
+                                responses_content.append({
+                                    "type": "input_image",
+                                    "image_url": url,
+                                })
+                    if responses_content:
+                        items.append({"role": "user", "content": responses_content})
+                        continue
                 content_text = str(content) if content is not None else ""
 
                 if role == "assistant":
@@ -3711,10 +3734,13 @@ class AIAgent:
                 content = item.get("content", "")
                 if content is None:
                     content = ""
-                if not isinstance(content, str):
-                    content = str(content)
-
-                normalized.append({"role": role, "content": content})
+                # Preserve multimodal content arrays (input_text + input_image parts)
+                if isinstance(content, list):
+                    normalized.append({"role": role, "content": content})
+                else:
+                    if not isinstance(content, str):
+                        content = str(content)
+                    normalized.append({"role": role, "content": content})
                 continue
 
             raise ValueError(

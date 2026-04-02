@@ -90,7 +90,7 @@ def _tool_map(messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return mapping
 
 
-def _result_preview(content: Any, limit: int = 400) -> str:
+def _result_preview(content: Any, limit: int = 4000) -> str:
     text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
     return text[:limit] + ("..." if len(text) > limit else "")
 

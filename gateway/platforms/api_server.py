@@ -892,7 +892,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(message, str):
             return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
 
-        user_content, persist_text = self._build_user_content(message, body.get("attachments"))
+        raw_attachments_sync = body.get("attachments")
+        if raw_attachments_sync:
+            logger.debug("[chat] Received %d attachment(s): %s",
+                         len(raw_attachments_sync),
+                         [(a.get("name"), a.get("contentType"), len(a.get("content", "") or a.get("base64", "") or "")) for a in raw_attachments_sync if isinstance(a, dict)])
+        user_content, persist_text = self._build_user_content(message, raw_attachments_sync)
+        if isinstance(user_content, list):
+            logger.debug("[chat] Built multimodal content with %d parts", len(user_content))
 
         model = body.get("model") or session.get("model") or "hermes-agent"
         system_message = body.get("system_message")
@@ -961,7 +968,14 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
 
         # Build multimodal content if image attachments are present
-        user_content, persist_text = self._build_user_content(message, body.get("attachments"))
+        raw_attachments = body.get("attachments")
+        if raw_attachments:
+            logger.debug("[chat/stream] Received %d attachment(s): %s",
+                         len(raw_attachments),
+                         [(a.get("name"), a.get("contentType"), len(a.get("content", "") or a.get("base64", "") or "")) for a in raw_attachments if isinstance(a, dict)])
+        user_content, persist_text = self._build_user_content(message, raw_attachments)
+        if isinstance(user_content, list):
+            logger.debug("[chat/stream] Built multimodal content with %d parts", len(user_content))
 
         system_message = body.get("system_message")
         history = db.get_messages_as_conversation(session_id)
@@ -1000,7 +1014,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     }
             return mapping
 
-        def _result_preview(content: Any, limit: int = 400) -> str:
+        def _result_preview(content: Any, limit: int = 4000) -> str:
             text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
             return text[:limit] + ("..." if len(text) > limit else "")
 
@@ -1027,7 +1041,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "preview": preview,
                 "args": args,
             }
-            _queue_event("tool.pending", payload)
             _queue_event("tool.started", payload)
 
         agent_ref = [None]
