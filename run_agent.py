@@ -646,7 +646,7 @@ class AIAgent:
         """
         _install_safe_stdio()
 
-        self.model = model
+        self.model = model if isinstance(model, str) else str(model)
         self.max_iterations = max_iterations
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
@@ -5657,7 +5657,7 @@ class AIAgent:
                 fb_api_mode = "codex_responses"
 
             old_model = self.model
-            self.model = fb_model
+            self.model = fb_model if isinstance(fb_model, str) else str(fb_model)
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
