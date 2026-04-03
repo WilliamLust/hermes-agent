@@ -268,11 +268,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            resolved = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            # If the provider resolves to "custom" (e.g. ollama, lmstudio,
+            # vllm, llamacpp), continue to look up custom_providers by the
+            # original name. Only skip for real built-in providers.
+            if resolved != "custom":
+                return None
 
     config = load_config()
     

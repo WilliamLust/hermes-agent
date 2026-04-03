@@ -369,6 +369,22 @@ def _derive_chat_session_id(
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 
+# Cron module — imported at module level to avoid Python descriptor binding
+# issue when functions are imported inside a class body.
+try:
+    from cron.jobs import (
+        list_jobs as _cron_list,
+        get_job as _cron_get,
+        create_job as _cron_create,
+        update_job as _cron_update,
+        remove_job as _cron_remove,
+        pause_job as _cron_pause,
+        resume_job as _cron_resume,
+        trigger_job as _cron_trigger,
+    )
+    _CRON_MODULE_AVAILABLE = True
+except ImportError:
+    _CRON_MODULE_AVAILABLE = False
 
 class APIServerAdapter(BasePlatformAdapter):
     """
@@ -1936,6 +1952,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     # Check cron module availability once (not per-request)
+<<<<<<< HEAD
     _CRON_AVAILABLE = False
     try:
         from cron.jobs import (
@@ -1963,6 +1980,12 @@ class APIServerAdapter(BasePlatformAdapter):
         _CRON_AVAILABLE = True
     except ImportError:
         pass
+=======
+    # NOTE: imports are done at module level to avoid Python descriptor
+    # binding issue — functions imported inside a class body become
+    # unbound methods, so self._fn(arg) passes self as first positional.
+    _CRON_AVAILABLE = _CRON_MODULE_AVAILABLE
+>>>>>>> 63fcf052 (fix: local model support — provider resolver + jobs API)
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
@@ -1997,7 +2020,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return cron_err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
-            jobs = self._cron_list(include_disabled=include_disabled)
+            jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -2045,7 +2068,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None:
                 kwargs["repeat"] = repeat
 
-            job = self._cron_create(**kwargs)
+            job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -2062,7 +2085,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_get(job_id)
+            job = _cron_get(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2095,7 +2118,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            job = self._cron_update(job_id, sanitized)
+            job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2114,7 +2137,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            success = self._cron_remove(job_id)
+            success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
@@ -2133,7 +2156,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_pause(job_id)
+            job = _cron_pause(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2152,7 +2175,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_resume(job_id)
+            job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2171,7 +2194,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_trigger(job_id)
+            job = _cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
