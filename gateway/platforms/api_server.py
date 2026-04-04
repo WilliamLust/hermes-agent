@@ -238,7 +238,7 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
 }
 
@@ -1390,12 +1390,23 @@ class APIServerAdapter(BasePlatformAdapter):
             for model_id, description in curated_models_for_provider(provider)
         ]
 
+        # Also include models from other authenticated providers
+        model_ids = {m["id"] for m in models}
+        providers = list_available_providers()
+        for p in providers:
+            if not p.get("authenticated") or p["id"] == provider:
+                continue
+            for model_id, desc in curated_models_for_provider(p["id"]):
+                if model_id not in model_ids:
+                    models.append({"id": model_id, "description": desc or p.get("label", p["id"]), "provider": p["id"]})
+                    model_ids.add(model_id)
+
         # Ensure the currently configured model is always in the list
         current_model = (current.get("model") or "").strip()
         if current_model:
-            model_ids = {m["id"] for m in models}
             if current_model not in model_ids:
                 models.insert(0, {"id": current_model, "description": "current", "provider": provider})
+                model_ids.add(current_model)
 
         # Discover local Ollama models if reachable
         try:
