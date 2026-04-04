@@ -653,7 +653,20 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Clear stale OPENAI_API_KEY from parent process (e.g. OpenClaw sets
+        # this to an Anthropic OAuth token which confuses provider resolution).
+        # The configured provider's own auth (device_code, credential pool, etc.)
+        # is the correct source of truth.
+        _stale_oai_key = os.environ.pop("OPENAI_API_KEY", None)
+        _stale_oai_base = os.environ.pop("OPENAI_BASE_URL", None)
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        finally:
+            # Restore env if something else depends on it
+            if _stale_oai_key is not None:
+                os.environ["OPENAI_API_KEY"] = _stale_oai_key
+            if _stale_oai_base is not None:
+                os.environ["OPENAI_BASE_URL"] = _stale_oai_base
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
@@ -1330,14 +1343,27 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             updated_model_cfg = {}
 
-        if "model" in body:
-            updated_model_cfg["default"] = str(body.get("model") or "").strip()
-        if "provider" in body:
-            updated_model_cfg["provider"] = str(body.get("provider") or "").strip()
+        new_provider = str(body.get("provider") or "").strip()
+        new_model = str(body.get("model") or "").strip()
+
+        # Strip provider prefix from model name (e.g. "openai/gpt-5.4" -> "gpt-5.4")
+        # to match how `hermes model <name> <provider>` works from terminal
+        if new_model and "/" in new_model and not new_provider:
+            parts = new_model.split("/", 1)
+            new_provider = parts[0]
+            new_model = parts[1]
+
+        if new_model:
+            updated_model_cfg["default"] = new_model
+        if new_provider:
+            updated_model_cfg["provider"] = new_provider
         if "base_url" in body:
             updated_model_cfg["base_url"] = str(body.get("base_url") or "").strip()
 
         config["model"] = updated_model_cfg
+        # Also sync top-level provider key so all runtime paths agree
+        if new_provider:
+            config["provider"] = new_provider
         try:
             save_config(config)
         except Exception as e:
@@ -1360,7 +1386,7 @@ class APIServerAdapter(BasePlatformAdapter):
         current = self._current_model_settings(config)
         provider = (request.query.get("provider") or current["provider"] or "openrouter").strip()
         models = [
-            {"id": model_id, "description": description}
+            {"id": model_id, "description": description, "provider": provider}
             for model_id, description in curated_models_for_provider(provider)
         ]
 
@@ -1369,7 +1395,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if current_model:
             model_ids = {m["id"] for m in models}
             if current_model not in model_ids:
-                models.insert(0, {"id": current_model, "description": "current"})
+                models.insert(0, {"id": current_model, "description": "current", "provider": provider})
 
         # Discover local Ollama models if reachable
         try:
@@ -1384,7 +1410,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 for om in (data.get("models") or []):
                                     name = om.get("name") or om.get("model") or ""
                                     if name and name not in model_ids:
-                                        models.append({"id": name, "description": "local"})
+                                        models.append({"id": name, "description": "local", "provider": "ollama"})
                                         model_ids.add(name)
                                 break
                 except Exception:
