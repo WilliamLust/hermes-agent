@@ -536,6 +536,7 @@ _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
 
 _PROVIDER_ALIASES = {
+    "openai": "openai-codex",
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
