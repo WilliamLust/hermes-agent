@@ -1,5 +1,10 @@
 # Hermes Agent - Development Guide
+## 📘 Active Project Context: Ebook Factory Pipeline
+When working on ebook generation tasks, **always load and reference**:
+`~/.hermes/ebook-factory/FACTORY-PIPELINE-PLAN.md`
 
+This file defines the 3-layer factory architecture, agent roles, file structure, and implementation timeline.
+Do not proceed with ebook tasks without consulting this blueprint.
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 ## Development Environment
