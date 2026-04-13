@@ -7,16 +7,41 @@ from fastapi import HTTPException
 
 from hermes_cli.config import load_config
 
+def _extract_model_string(model_value) -> str:
+    """Extract the model string from config, handling both str and dict formats.
+
+    Config can be either:
+      model: "claude-opus-4-6"                    # flat string
+      model: { default: "claude-opus-4-6", provider: "anthropic" }  # nested dict
+    """
+    if isinstance(model_value, str):
+        return model_value
+    if isinstance(model_value, dict):
+        return model_value.get("default", model_value.get("model", ""))
+    return ""
+
+
+def _extract_provider_string(config: dict) -> str:
+    """Extract provider from config, checking both top-level and nested model dict."""
+    model_value = config.get("model")
+    if isinstance(model_value, dict):
+        provider = model_value.get("provider", "")
+        if provider:
+            return provider
+    return config.get("provider", os.getenv("HERMES_PROVIDER", "anthropic"))
+
+
 try:
     from gateway.run import _resolve_model, _resolve_runtime_agent_kwargs
 except ImportError:
     def _resolve_model() -> str:
         config = load_config()
-        return config.get("model", os.getenv("HERMES_MODEL", "claude-sonnet-4-5"))
+        raw = config.get("model", os.getenv("HERMES_MODEL", "claude-sonnet-4-5"))
+        return _extract_model_string(raw) or "claude-sonnet-4-5"
 
     def _resolve_runtime_agent_kwargs() -> dict:
         config = load_config()
-        return {"provider": config.get("provider", os.getenv("HERMES_PROVIDER", "anthropic"))}
+        return {"provider": _extract_provider_string(config)}
 from hermes_state import SessionDB
 from run_agent import AIAgent
 from tools.memory_tool import MemoryStore
@@ -48,10 +73,17 @@ def get_config() -> dict[str, Any]:
 
 
 def get_runtime_model() -> str:
-    return _resolve_model()
+    """Return the configured model as a plain string, re-reading config each time.
+
+    Some code paths return a dict {'default': '...', 'provider': '...'} instead
+    of a bare string. We normalize here so callers always get a usable model ID.
+    """
+    raw = _resolve_model()
+    return _extract_model_string(raw) or "claude-sonnet-4-5"
 
 
 def get_runtime_agent_kwargs() -> dict[str, Any]:
+    """Return runtime kwargs (provider, base_url, etc.), always fresh."""
     return _resolve_runtime_agent_kwargs()
 
 
