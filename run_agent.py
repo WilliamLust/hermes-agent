@@ -709,9 +709,17 @@ class AIAgent:
         # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
         # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
         # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
-            self._is_direct_openai_url()
-            or self._model_requires_responses_api(self.model)
+        # ACP runtimes are excluded: CopilotACPClient handles its own
+        # routing and does not implement the Responses API surface.
+        if (
+            self.api_mode == "chat_completions"
+            and self.provider != "copilot-acp"
+            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and (
+                self._is_direct_openai_url()
+                or self._model_requires_responses_api(self.model)
+            )
         ):
             self.api_mode = "codex_responses"
 
