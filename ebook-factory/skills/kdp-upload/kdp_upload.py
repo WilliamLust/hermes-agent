@@ -17,7 +17,7 @@ Usage:
 Credentials:
   Set in ~/.hermes/.env:
     KDP_EMAIL=your@amazon.com
-    KDP_PASSWORD=yourpassword
+    KDP_PASSWORD=your_password
   OR pass as env vars at runtime (never hardcode).
 
 Flow:
@@ -157,6 +157,67 @@ def safe_fill(page, selector: str, value: str, label: str = ""):
     except Exception as e:
         log(f"  SKIP {label or selector}: {e}")
 
+def _notify_verification_needed(current_url: str):
+    """Send Telegram message asking user to complete Amazon verification."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log("   (No Telegram configured — complete verification manually and restart)")
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": (
+                    "🔐 *KDP Upload — Amazon Verification Required*\n\n"
+                    "Amazon is asking for identity verification.\n"
+                    "Complete it in the Firefox browser window on your desktop.\n\n"
+                    "Then reply *done* here to continue the upload."
+                ),
+                "parse_mode": "Markdown",
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        log(f"   Telegram notify failed: {e}")
+
+
+def _wait_for_telegram_confirmation(timeout: int = 600) -> bool:
+    """
+    Poll Telegram for a 'done' reply from the user.
+    Returns True when confirmed, False if timed out.
+    """
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log("   No Telegram — assuming verification complete, continuing...")
+        return True
+
+    import time as _time
+    deadline = _time.time() + timeout
+    last_update_id = 0
+
+    log(f"   Polling for 'done' reply (timeout: {timeout}s)...")
+    while _time.time() < deadline:
+        try:
+            resp = requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                params={"offset": last_update_id + 1, "timeout": 5},
+                timeout=10,
+            )
+            updates = resp.json().get("result", [])
+            for update in updates:
+                last_update_id = update["update_id"]
+                text = update.get("message", {}).get("text", "").strip().lower()
+                chat_id = str(update.get("message", {}).get("chat", {}).get("id", ""))
+                if chat_id == str(TELEGRAM_CHAT_ID) and text in ("done", "ready", "continue", "ok"):
+                    log("   ✅ Confirmation received — continuing upload")
+                    return True
+        except Exception:
+            pass
+        _time.sleep(2)
+
+    log("   ⏱ Timeout waiting for confirmation — proceeding anyway")
+    return False
+
+
 # ── KDP Sign-in ───────────────────────────────────────────────────────────────
 
 def signin_kdp(page, session_dir: Path | None = None) -> bool:
@@ -172,8 +233,8 @@ def signin_kdp(page, session_dir: Path | None = None) -> bool:
             cookies = json.loads(cookie_file.read_text())
             page.context.add_cookies(cookies)
             page.goto(KDP_BOOKSHELF, timeout=20000)
-            time.sleep(2)
-            if "bookshelf" in page.url or "signin" not in page.url:
+            time.sleep(3)
+            if "bookshelf" in page.url and "signin" not in page.url:
                 log("Session restored — already signed in")
                 return True
             log("Saved session expired — signing in fresh")
@@ -181,65 +242,80 @@ def signin_kdp(page, session_dir: Path | None = None) -> bool:
     if not KDP_EMAIL or not KDP_PASSWORD:
         die("KDP_EMAIL and KDP_PASSWORD must be set in ~/.hermes/.env")
 
+    # Navigate directly to the Amazon KDP sign-in page
     log("Navigating to KDP sign-in...")
-    page.goto(f"{KDP_BASE}/", timeout=20000)
+    signin_url = (
+        "https://www.amazon.com/ap/signin"
+        "?openid.pape.max_auth_age=0"
+        "&openid.return_to=https%3A%2F%2Fkdp.amazon.com%2Fen_US%2Fbookshelf"
+        "&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+        "&openid.assoc_handle=amzn_dtp"
+        "&openid.mode=checkid_setup"
+        "&language=en_US"
+        "&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+        "&pageId=kdp-ap"
+        "&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
+    )
+    page.goto(signin_url, timeout=20000)
+    page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(1)
 
-    # Click "Sign in" if on landing page
-    signin_btn = page.query_selector("a[href*='signin'], a[href*='sign-in'], button:has-text('Sign in')")
-    if signin_btn:
-        signin_btn.click()
-        time.sleep(1)
-
-    # Email field
+    # Email field — id=ap_email, name=email
     try:
-        page.wait_for_selector("input[name='email'], input[type='email'], #ap_email", timeout=10000)
-        email_sel = "input[name='email']" if page.query_selector("input[name='email']") else "#ap_email"
-        slow_type(page, email_sel, KDP_EMAIL)
+        page.wait_for_selector("#ap_email", timeout=10000)
+        page.fill("#ap_email", KDP_EMAIL)
         log("  Entered email")
+        time.sleep(0.5)
 
-        # Click Continue / Next
-        for btn_sel in ["input#continue", "input[id='continue']", "button:has-text('Continue')"]:
-            btn = page.query_selector(btn_sel)
-            if btn:
-                btn.click()
-                break
-        time.sleep(1)
+        # Click Continue
+        page.click("input#continue, input[type='submit']")
+        time.sleep(2)
     except Exception as e:
         log(f"  Email step issue: {e}")
 
-    # Password field
+    # Password field — id=ap_password (may appear on same page or next)
     try:
-        page.wait_for_selector("input[name='password'], #ap_password", timeout=8000)
-        pw_sel = "input[name='password']" if page.query_selector("input[name='password']") else "#ap_password"
-        slow_type(page, pw_sel, KDP_PASSWORD)
+        page.wait_for_selector("#ap_password", timeout=10000)
+        page.fill("#ap_password", KDP_PASSWORD)
         log("  Entered password")
+        time.sleep(0.5)
 
         # Click Sign In
-        for btn_sel in ["input#signInSubmit", "input[type='submit']", "button:has-text('Sign in')"]:
-            btn = page.query_selector(btn_sel)
-            if btn:
-                btn.click()
-                break
-        time.sleep(3)
+        page.click("input#signInSubmit, input[type='submit']")
+        time.sleep(4)
     except Exception as e:
         log(f"  Password step issue: {e}")
 
-    # Check for MFA / CAPTCHA
-    if "auth-mfa" in page.url or "cvf" in page.url:
-        log("⚠️  MFA or CAPTCHA detected — manual intervention needed")
-        log("   Complete the verification in the browser window, then press Enter here...")
-        input("   [Press Enter when done] ")
-        time.sleep(2)
+    # Check for MFA / CAPTCHA / any challenge
+    current_url = page.url
+    if ("auth-mfa" in current_url or "cvf" in current_url or
+            "ap/cvf" in current_url or "ap/signin/" in current_url or
+            "challenge" in current_url or "OTP" in page.content()[:2000]):
+        log("⚠️  Amazon verification challenge detected!")
+        log(f"   Current URL: {current_url[:80]}")
 
-    # Verify signed in
-    page.goto(KDP_BOOKSHELF, timeout=20000)
+        # Send Telegram notification asking user to complete verification
+        _notify_verification_needed(current_url)
+
+        log("   Waiting for you to complete verification...")
+        log("   Reply 'done' to @Hermes_Ebook_Factory_Bot on Telegram when finished")
+
+        # Poll Telegram for 'done' reply (up to 10 minutes)
+        _wait_for_telegram_confirmation(timeout=600)
+
+        time.sleep(3)
+        page.wait_for_load_state("networkidle", timeout=15000)
+
+    # Verify signed in — should land on bookshelf
+    page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(2)
 
-    signed_in = "bookshelf" in page.url or "signin" not in page.url
+    signed_in = "bookshelf" in page.url or (
+        "kdp.amazon.com" in page.url and "signin" not in page.url
+    )
+
     if signed_in:
         log("✅ Signed in to KDP")
-        # Save session
         if session_dir:
             session_dir.mkdir(parents=True, exist_ok=True)
             cookies = page.context.cookies()
@@ -268,8 +344,18 @@ def fill_book_details(page, meta: dict, dry_run: bool = False):
 
     # Navigate to new Kindle eBook setup
     page.goto(KDP_NEW_EBOOK, timeout=20000)
+    page.wait_for_load_state("networkidle", timeout=15000)
     time.sleep(2)
     log(f"  URL: {page.url[:80]}")
+
+    # If we ended up back on signin, authentication failed
+    if "signin" in page.url or "ap/signin" in page.url:
+        log("  ⚠️  Not authenticated — landed on sign-in page instead of KDP form")
+        log("  Attempting to re-navigate after potential auth redirect...")
+        page.goto(KDP_NEW_EBOOK, timeout=20000)
+        page.wait_for_load_state("networkidle", timeout=15000)
+        time.sleep(3)
+        log(f"  URL after retry: {page.url[:80]}")
 
     # Title
     safe_fill(page, "input#bookTitle, input[name='bookTitle'], input[data-qa='book-title']",
@@ -616,19 +702,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="KDP Upload Helper — fills KDP form from kdp-metadata.json"
     )
-    parser.add_argument("--book-dir", type=Path, default=None,
-                        help="Path to workbook dir (auto-detects most recent if omitted)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print what would be filled — no browser, no KDP")
-    parser.add_argument("--visible", action="store_true",
-                        help="Run with visible browser (non-headless) to watch the automation")
-    parser.add_argument("--session-dir", type=Path, default=DEFAULT_SESSION_DIR,
-                        help=f"Directory to save/restore login session (default: {DEFAULT_SESSION_DIR})")
-    parser.add_argument("--skip-signin", action="store_true",
-                        help="Skip sign-in (use if already signed in via saved session)")
+    parser.add_argument("--book-dir", type=Path, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--visible", action="store_true")
+    parser.add_argument("--session-dir", type=Path, default=DEFAULT_SESSION_DIR)
+    parser.add_argument("--skip-signin", action="store_true")
     args = parser.parse_args()
 
-    # Find workbook
     if args.book_dir:
         book_dir = args.book_dir
     else:
@@ -643,67 +723,40 @@ def main():
         die(f"Book directory not found: {book_dir}")
 
     log(f"Book dir: {book_dir.name}")
-
-    # Load metadata
     meta = load_metadata(book_dir)
 
-    # Dry run — no browser needed
     if args.dry_run:
         print_dry_run_summary(meta, book_dir)
         return
 
-    # Check credentials
     if not args.skip_signin and (not KDP_EMAIL or not KDP_PASSWORD):
         die("Set KDP_EMAIL and KDP_PASSWORD in ~/.hermes/.env before running")
 
-    # Launch browser
-    log(f"Launching {'visible' if args.visible else 'headless'} browser...")
+    log(f"Launching {'visible' if args.visible else 'headless'} browser (Camoufox)...")
 
     try:
-        from playwright.sync_api import sync_playwright
+        from camoufox.sync_api import Camoufox
     except ImportError:
-        die("playwright not installed — run: pip install playwright && playwright install chromium")
+        die("camoufox not installed — run: pip install camoufox && python3 -m camoufox fetch")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=not args.visible,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ]
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
-        page = context.new_page()
-
+    with Camoufox(headless=not args.visible, block_images=False) as fox:
+        page = fox.new_page()
         try:
-            # Sign in
             if not args.skip_signin:
                 signed_in = signin_kdp(page, session_dir=args.session_dir)
                 if not signed_in:
                     log("⚠️  Could not confirm sign-in — proceeding anyway")
 
-            # Step 1: Book Details
             fill_book_details(page, meta, dry_run=False)
             time.sleep(2)
 
-            # Step 2: Upload
             upload_content(page, book_dir, dry_run=False)
             time.sleep(2)
 
-            # Step 3: Pricing
             fill_pricing(page, meta, dry_run=False)
             time.sleep(2)
 
-            # Get final draft URL
             draft_url = page.url
-
-            # Take a screenshot for the Telegram notification
             screenshot_path = book_dir / "output" / "kdp-draft-screenshot.png"
             page.screenshot(path=str(screenshot_path), full_page=False)
             log(f"Screenshot saved: {screenshot_path}")
@@ -712,18 +765,16 @@ def main():
             log("✅ KDP DRAFT SAVED — ready for your review")
             log(f"   Bookshelf: {KDP_BOOKSHELF}")
             log(f"   URL: {draft_url}")
-            log("   ⚠️  DO NOT SUBMIT automatically — review and publish manually")
+            log("   ⚠️  DO NOT SUBMIT — review and publish manually")
             log("="*60)
 
-            # Telegram notification
             title = meta.get("title", "Unknown")
             price = meta.get("pricing", {}).get("us_price", "?")
             msg = (
                 f"📚 *KDP Draft Ready: {title}*\n\n"
-                f"All fields filled, EPUB uploaded, priced at ${price}.\n\n"
-                f"*Next step:* Review and publish at:\n"
+                f"Priced at ${price}. Review and publish at:\n"
                 f"[kdp.amazon.com/bookshelf]({KDP_BOOKSHELF})\n\n"
-                f"⚠️ Do NOT submit without reviewing the preview first."
+                f"⚠️ Do NOT submit without reviewing the preview."
             )
             notify_telegram(msg)
 
@@ -731,17 +782,11 @@ def main():
             log(f"Error during upload: {e}")
             import traceback
             traceback.print_exc()
-            # Take error screenshot
             try:
-                err_screenshot = book_dir / "output" / "kdp-error-screenshot.png"
-                page.screenshot(path=str(err_screenshot))
-                log(f"Error screenshot: {err_screenshot}")
+                page.screenshot(path=str(book_dir / "output" / "kdp-error-screenshot.png"))
             except Exception:
                 pass
             raise
-        finally:
-            context.close()
-            browser.close()
 
 
 if __name__ == "__main__":
