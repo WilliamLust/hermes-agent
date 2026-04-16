@@ -1,7 +1,7 @@
 # Hermes Agent — Development Guide & Ebook Factory Operations Manual
 
-**Last Updated:** 2026-04-15
-**Status:** Active — Pipeline Build Phase
+**Last Updated:** 2026-04-17 (Session 2)
+**Status:** Active — Production Ready
 **Owner:** bookforge (William Archer)
 
 ---
@@ -37,9 +37,10 @@ source ~/hermes-agent/venv/bin/activate
 
 ### Local Models (Ollama at http://localhost:11434)
 ```
-qwen3.5:35b-a3b-q4_k_m ← PRIMARY (drafting, outlining, refining — MoE, fast, 262k ctx)
-qwen3.5:27b-16k    ← FALLBACK (if 35B too slow or VRAM pressure)
-qwen3.5:27b-8k     ← FALLBACK-2 (speed-critical tasks only)
+qwen3.5:35b-a3b-q4_k_m ← OUTLINER + COVER PROMPT (reasoning/structure tasks, 262k ctx)
+                          NOTE: Always pass "think":false in API calls — content field is empty otherwise
+qwen3.5:27b-16k    ← TOPIC PIPELINE (pass1+pass3), CHAPTER DRAFTING + REFINING (primary)
+qwen3.5:27b-8k     ← FALLBACK (speed-critical tasks only)
 qwen3.5:27b-q4_K_M ← ALTERNATE name for 27b dense model
 qwen3.5:9b         ← Fast/light tasks only
 ```
@@ -172,15 +173,39 @@ Packager        | ~/.hermes/ebook-factory/skills/packager/           | w-polishe
 
 ## 4. HOW TO RUN THE PIPELINE
 
-### Phase 0: Generate Outline (WORKING)
+### Phase 0: Generate Topic Plan (WORKING — use topic_pipeline.py)
+```bash
+cd ~/.hermes/hermes_skills/planner/
+source ~/hermes-agent/venv/bin/activate
+
+# Full pipeline (recommended): Qwen 27B → live Amazon research → re-rank
+python3 topic_pipeline.py
+
+# With focus or idea:
+python3 topic_pipeline.py --niche health
+python3 topic_pipeline.py --idea "gut reset"
+
+# Planner-only (no scraping, saves Firecrawl credits):
+python3 topic_pipeline.py --skip-research
+
+# Output: ~/.hermes/output/planner/topic_plan_latest.md
+```
+
+### Phase 0.5: Generate Outline (WORKING — LLM-driven)
 ```bash
 cd ~/.hermes/skills/ebook-factory/skills/outliner/
 source ~/hermes-agent/venv/bin/activate
-python3 orchestrator.py --chapters 10
-# Output: ~/.hermes/ebook-factory/workbooks/book-<topic>/01_outline.md
-```
 
-### Phase 1: Generate Chapters (BUILD IN PROGRESS)
+# Use topic from plan:
+python3 orchestrator.py --topic "The Asynchronous Manager" --niche productivity
+
+# Or let it auto-select top topic from latest plan:
+python3 orchestrator.py --chapters 10
+
+# Output: ~/.hermes/ebook-factory/workbooks/book-<topic>/01_outline.md
+#         ~/.hermes/ebook-factory/workbooks/book-<topic>/cover_prompt.txt
+```
+### Phase 1: Generate Chapters
 ```bash
 cd ~/.hermes/ebook-factory/skills/chapter-builder/
 source ~/hermes-agent/venv/bin/activate
@@ -383,13 +408,10 @@ hermes /model local-localhost:11434/qwen3.5:35b-a3b-q4_k_m
 ✓ Ollama running with qwen3.5:35b-a3b-q4_k_m (MoE, 23GB, 262k ctx)
 
 ### Known Issues / Next Session TODO
-- Analyzer + Planner not committed to GitHub yet — add in next session
-- Test Analyzer + Planner end-to-end (status uncertain from prior sessions)
-- Chapter-Builder word count: 35B model lands 5-10% short; set outline targets to 3100 words
-- Consider testing qwen3.5:27b-16k for chapter drafting — may be faster/more consistent
+- Analyzer + Planner not committed to GitHub yet — push in next session
 - KDP credentials set in ~/.hermes/.env — password was recently changed
-- NVIDIA persistence mode: run `sudo nvidia-smi -pm 1` after each reboot
-- Cover generator: parenting palette needs work (too generic/abstract background)
+- NVIDIA persistence mode: run `sudo nvidia-smi -pm 1` after each reboot (currently ON)
+- KDP category paths in upload kit are best-effort — verify in KDP's tree browser when uploading
 ```
 ✓ Refiner agent (refiner.py) — iterative refinement loop
 ✓ Old drafter (orchestrator.py in draft-chapter/) — superseded by new Chapter-Builder

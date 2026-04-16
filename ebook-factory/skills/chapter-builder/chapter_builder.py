@@ -349,6 +349,7 @@ def call_ollama(prompt: str, model: str, system: str = SYSTEM_PROMPT,
             {"role": "user", "content": prompt},
         ],
         "stream": False,
+        "think": False,
         "options": {
             "temperature": 0.7,
             "num_predict": num_predict,

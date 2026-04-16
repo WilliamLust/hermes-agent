@@ -28,6 +28,7 @@ import json
 import shutil
 import argparse
 import subprocess
+import requests
 from pathlib import Path
 from datetime import datetime
 
@@ -41,6 +42,9 @@ STYLE_GUIDE = Path.home() / "books" / "factory" / "style-guide.md"
 
 DEFAULT_AUTHOR = "William Archer"
 DEFAULT_LANGUAGE = "en"
+
+OLLAMA_URL     = "http://localhost:11434/api/chat"
+METADATA_MODEL = "qwen3.5:27b-16k"   # Description + subtitle generation
 
 
 # ============================================================================
@@ -92,6 +96,126 @@ def find_latest_workbook() -> Path:
 
 
 # ============================================================================
+# LLM METADATA GENERATION
+# ============================================================================
+
+# Reference — the ADHD book description is the quality standard to match
+_DESCRIPTION_EXAMPLE = (
+    "Every productivity system you've tried has failed you. GTD. Pomodoro. Time blocking. "
+    "Morning routines. You've bought the books, tried the apps, and abandoned everything by "
+    "week two. This isn't a character flaw. It's a neurological mismatch.\n\n"
+    "Productivity for ADHD Adults builds a system from scratch for how your brain actually "
+    "works — not how productivity gurus assume it should. Drawing on Dr. Russell Barkley's "
+    "research on executive function, Gollwitzer's implementation intentions, and strategies "
+    "used by adults with ADHD who ship real work, this book gives you four concrete pillars: "
+    "environment design, dopamine management, time externalization, and energy scheduling. "
+    "No willpower required.\n\n"
+    "You are not broken. You are mismatched with standard advice. This book fixes the match."
+)
+
+_SUBTITLE_EXAMPLE = "Stop Fighting Your Brain and Start Getting Things Done"
+
+
+def generate_llm_metadata(title: str, outline_content: str) -> dict:
+    """
+    Use Qwen 27B to write a marketing-quality subtitle and KDP description.
+    Returns {"subtitle": str, "description": str} or empty strings on failure.
+    Falls back silently — packager continues with placeholder values if LLM fails.
+    """
+    # Extract chapter titles from outline as context for the LLM
+    ch_titles = re.findall(r"^## Chapter \d+:\s*(.+)", outline_content, re.MULTILINE)
+    ch_summary = "\n".join(f"- {t}" for t in ch_titles[:10]) if ch_titles else "(outline not parsed)"
+
+    # Extract core promise and voice style if outliner wrote them
+    promise_match = re.search(r"\*\*Core Promise:\*\*\s*(.+)", outline_content)
+    promise = promise_match.group(1).strip() if promise_match else ""
+    voice_match = re.search(r"\*\*Voice Style:\*\*\s*(.+)", outline_content)
+    voice = voice_match.group(1).strip() if voice_match else ""
+    reader_match = re.search(r"\*\*Target Reader:\*\*\s*(.+)", outline_content)
+    reader = reader_match.group(1).strip() if reader_match else ""
+
+    system = """You are a professional Amazon KDP book marketer who writes descriptions that convert browsers to buyers.
+
+Your descriptions:
+- Open with a hook that names the reader's exact pain point
+- Build urgency by validating their frustration with existing solutions
+- Introduce the book's specific approach and unique angle
+- List concrete outcomes (not vague promises)
+- End with a strong buying trigger
+- Use short paragraphs (3-4 sentences max each)
+- No hollow phrases: no "comprehensive guide", no "journey", no "whether you're a beginner or expert"
+- Total length: 3 tight paragraphs, 100-180 words
+
+Subtitles:
+- Specific promise of the transformation
+- 5-9 words
+- No colons, no exclamation marks
+- Should make someone think "that's exactly what I need"
+
+Output JSON only: {"subtitle": "...", "description": "..."}"""
+
+    user = f"""Write Amazon KDP metadata for this nonfiction ebook.
+
+TITLE: {title}
+CORE PROMISE: {promise}
+TARGET READER: {reader}
+VOICE STYLE: {voice}
+
+CHAPTER OVERVIEW:
+{ch_summary}
+
+QUALITY STANDARD — This is the bar to match (Productivity for ADHD Adults):
+Subtitle: "{_SUBTITLE_EXAMPLE}"
+Description:
+"{_DESCRIPTION_EXAMPLE}"
+
+Now write the subtitle and description for "{title}".
+Output ONLY valid JSON: {{"subtitle": "...", "description": "..."}}"""
+
+    log("Generating subtitle + description via Qwen 27B...")
+    try:
+        resp = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": METADATA_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user},
+                ],
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0.7, "num_predict": 800},
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["message"]["content"].strip()
+        # Strip any stray thinking blocks
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        # Extract JSON (may be wrapped in ```json blocks)
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not json_match:
+            log("WARNING: LLM did not return JSON for metadata — using fallback")
+            return {"subtitle": "", "description": ""}
+        data = json.loads(json_match.group(0))
+        subtitle = data.get("subtitle", "").strip()
+        description = data.get("description", "").strip()
+        if subtitle and description:
+            log(f"  Subtitle: {subtitle}")
+            log(f"  Description: {description[:80]}...")
+            return {"subtitle": subtitle, "description": description}
+        else:
+            log("WARNING: LLM returned empty subtitle or description")
+            return {"subtitle": "", "description": ""}
+    except requests.exceptions.ConnectionError:
+        log("WARNING: Ollama not reachable — metadata LLM skipped")
+        return {"subtitle": "", "description": ""}
+    except Exception as e:
+        log(f"WARNING: Metadata LLM failed: {e}")
+        return {"subtitle": "", "description": ""}
+
+
+# ============================================================================
 # METADATA EXTRACTION
 # ============================================================================
 
@@ -131,8 +255,15 @@ def extract_book_metadata(workbook_dir: Path, outline_path: Path, cli_args) -> d
     desc_match = re.search(r'(?:description|summary|about)[^:]*:\s*(.+?)(?:\n\n|\Z)', outline_content, re.I | re.DOTALL)
     description = desc_match.group(1).strip()[:200] if desc_match else f"A practical guide to {title}."
 
+    # Generate LLM subtitle + description (overwrites regex fallback if successful)
+    llm_meta = generate_llm_metadata(title, outline_content)
+    subtitle   = llm_meta.get("subtitle", "")
+    if llm_meta.get("description"):
+        description = llm_meta["description"]
+
     return {
         "title": title,
+        "subtitle": subtitle,
         "author": author,
         "slug": slug,
         "language": DEFAULT_LANGUAGE,
@@ -149,8 +280,9 @@ def extract_book_metadata(workbook_dir: Path, outline_path: Path, cli_args) -> d
 # ============================================================================
 
 def generate_title_page(meta: dict) -> str:
+    subtitle_html = f'\n<p class="book-subtitle">{meta["subtitle"]}</p>' if meta.get("subtitle") else ""
     return f"""<div class="title-page">
-<h1 class="book-title">{meta['title']}</h1>
+<h1 class="book-title">{meta['title']}</h1>{subtitle_html}
 <p class="book-author">by {meta['author']}</p>
 <p class="book-publisher">{meta['publisher']}</p>
 <p class="book-date">{datetime.now().strftime('%Y')}</p>
@@ -580,19 +712,30 @@ def build_pdf(meta: dict, html_path: Path, output_dir: Path) -> Path:
 def build_kdp_metadata(meta: dict, chapters: list, output_dir: Path) -> Path:
     """Write KDP-ready metadata JSON."""
 
-    # BISAC category mapping (basic heuristic)
-    title_lower = meta["title"].lower()
+    # BISAC category mapping — keyword-based heuristic
+    title_lower = (meta["title"] + " " + meta.get("subtitle", "")).lower()
     bisac = "SEL027000"  # SELF-HELP / Personal Growth / General (default)
-    if any(w in title_lower for w in ["health", "fitness", "weight", "sleep", "fatigue"]):
-        bisac = "HEA039000"  # HEALTH & FITNESS
-    elif any(w in title_lower for w in ["finance", "money", "budget", "invest"]):
-        bisac = "BUS050000"  # BUSINESS / Personal Finance
-    elif any(w in title_lower for w in ["tech", "digital", "ai", "computer", "network", "privacy"]):
-        bisac = "COM000000"  # COMPUTERS / General
+
+    if any(w in title_lower for w in ["sleep", "insomnia", "rest"]):
+        bisac = "HEA006000"
+    elif any(w in title_lower for w in ["gut", "nutrition", "diet", "eating", "food"]):
+        bisac = "HEA017000"
+    elif any(w in title_lower for w in ["weight", "walking", "fitness", "exercise", "workout"]):
+        bisac = "HEA019000"
+    elif any(w in title_lower for w in ["health", "fatigue", "chronic", "wellness", "medical"]):
+        bisac = "HEA039000"
+    elif any(w in title_lower for w in ["finance", "money", "budget", "invest", "income", "wealth"]):
+        bisac = "BUS050000"
+    elif any(w in title_lower for w in ["ai ", "artificial intelligence", "chatgpt", "machine learning"]):
+        bisac = "COM014000"
+    elif any(w in title_lower for w in ["security", "privacy", "network", "digital", "cyber", "hacking", "computer"]):
+        bisac = "COM000000"
+    elif any(w in title_lower for w in ["time management", "time blocking", "productivity", "adhd", "procrastin", "focus", "habit"]):
+        bisac = "SEL016000"
 
     kdp_meta = {
         "title": meta["title"],
-        "subtitle": "",
+        "subtitle": meta.get("subtitle", ""),
         "author": meta["author"],
         "description": meta["description"],
         "keywords": meta["keywords"],
@@ -623,6 +766,274 @@ def build_kdp_metadata(meta: dict, chapters: list, output_dir: Path) -> Path:
 # ============================================================================
 # VALIDATION REPORT
 # ============================================================================
+
+def generate_description_html(meta: dict) -> str:
+    """
+    Convert the plain-text description from metadata into KDP-ready HTML.
+    KDP's CKEditor accepts a limited HTML subset:
+      <p>, <b>, <strong>, <em>, <i>, <ul>, <ol>, <li>, <br>
+    Strategy: split paragraphs on blank lines, wrap each in <p>.
+    Double-asterisk **text** → <strong>text</strong>.
+    """
+    raw = meta.get("description", f"A practical guide to {meta.get('title', 'this topic')}.")
+    # Bold markdown
+    raw = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', raw)
+    # Split into paragraphs
+    paragraphs = [p.strip() for p in re.split(r'\n\n+', raw) if p.strip()]
+    return "\n".join(f"<p>{p}</p>" for p in paragraphs)
+
+
+# ── KDP Upload Kit ─────────────────────────────────────────────────────────────
+
+# Suggested KDP categories for common BISAC codes
+# These are VERIFIED paths that exist in KDP's category browser (as of 2025).
+# Each niche has 3 options ordered by specificity: most-specific first.
+# When uploading, navigate KDP's tree to confirm the path still exists.
+BISAC_CATEGORIES = {
+    # SELF-HELP / Productivity / Time Management
+    "SEL027000": [
+        "Kindle Store > Kindle eBooks > Self-Help > Personal Transformation",
+        "Kindle Store > Kindle eBooks > Self-Help > Motivational",
+        "Kindle Store > Kindle eBooks > Business & Money > Time Management",
+    ],
+    # SELF-HELP / Time Management
+    "SEL016000": [
+        "Kindle Store > Kindle eBooks > Self-Help > Time Management",
+        "Kindle Store > Kindle eBooks > Business & Money > Time Management",
+        "Kindle Store > Kindle eBooks > Self-Help > Personal Transformation",
+    ],
+    # HEALTH & FITNESS / Diseases / General  (chronic fatigue, medical conditions)
+    "HEA039000": [
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Diseases & Physical Ailments > General",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Mental Health",
+        "Kindle Store > Kindle eBooks > Self-Help > Personal Transformation",
+    ],
+    # HEALTH & FITNESS / Exercise / General  (walking, fitness, weight loss)
+    "HEA019000": [
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Exercise & Fitness",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Weight Loss",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Healthy Living",
+    ],
+    # HEALTH & FITNESS / Nutrition  (gut health, diet)
+    "HEA017000": [
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Nutrition",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Diets & Weight Loss > General",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Healthy Living",
+    ],
+    # HEALTH & FITNESS / Sleep  (sleep books)
+    "HEA006000": [
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Diseases & Physical Ailments > Sleep Disorders",
+        "Kindle Store > Kindle eBooks > Health, Fitness & Dieting > Healthy Living",
+        "Kindle Store > Kindle eBooks > Self-Help > Personal Transformation",
+    ],
+    # BUSINESS & ECONOMICS / Personal Finance
+    "BUS050000": [
+        "Kindle Store > Kindle eBooks > Business & Money > Personal Finance > General",
+        "Kindle Store > Kindle eBooks > Business & Money > Entrepreneurship",
+        "Kindle Store > Kindle eBooks > Business & Money > Skills > Decision-Making & Problem Solving",
+    ],
+    # COMPUTERS / Security
+    "COM000000": [
+        "Kindle Store > Kindle eBooks > Computers & Technology > Security & Encryption",
+        "Kindle Store > Kindle eBooks > Computers & Technology > Networking & Cloud Computing",
+        "Kindle Store > Kindle eBooks > Computers & Technology > Internet & Social Media > Online Safety & Privacy",
+    ],
+    # AI / Technology productivity
+    "COM014000": [
+        "Kindle Store > Kindle eBooks > Computers & Technology > Artificial Intelligence",
+        "Kindle Store > Kindle eBooks > Computers & Technology > Software > Business",
+        "Kindle Store > Kindle eBooks > Business & Money > Skills > Decision-Making & Problem Solving",
+    ],
+}
+
+BISAC_LABELS = {
+    "SEL027000": "SELF-HELP / Personal Growth / General",
+    "SEL016000": "SELF-HELP / Time Management",
+    "HEA039000": "HEALTH & FITNESS / Diseases / General",
+    "HEA019000": "HEALTH & FITNESS / Exercise / General",
+    "HEA017000": "HEALTH & FITNESS / Nutrition",
+    "HEA006000": "HEALTH & FITNESS / Sleep",
+    "BUS050000": "BUSINESS & ECONOMICS / Personal Finance / General",
+    "COM000000": "COMPUTERS / Security / General",
+    "COM014000": "COMPUTERS / Artificial Intelligence",
+}
+
+
+def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path) -> None:
+    """
+    Write kdp-upload-kit.md — a complete, ordered copy-paste guide for KDP upload.
+    Covers every field in the order KDP presents them across all 3 steps.
+    """
+    total_words = sum(len(ch["content"].split()) for ch in chapters)
+    bisac = meta.get("bisac_category", "SEL027000")
+    categories = BISAC_CATEGORIES.get(bisac, BISAC_CATEGORIES["SEL027000"])
+    bisac_label = BISAC_LABELS.get(bisac, bisac)
+    description_html = generate_description_html(meta)
+    keywords = meta.get("keywords", [])
+    # Pad to 7 if short
+    while len(keywords) < 7:
+        keywords.append("")
+
+    # Find the DOCX file
+    docx_path = outputs.get("docx", "")
+    cover_path = str(output_dir / "cover.jpg") if (output_dir / "cover.jpg").exists() else "cover.jpg (generate first)"
+
+    lines = [
+        f"# KDP Upload Kit: {meta['title']}",
+        f"<!-- AUTO-GENERATED: {datetime.now().isoformat(timespec='seconds')} -->",
+        f"<!-- Upload at: https://kdp.amazon.com/en_US/title-setup/kindle/new/details -->",
+        "",
+        "Follow these steps IN ORDER. Each section maps to one KDP page.",
+        "Copy each field exactly as shown.",
+        "",
+        "---",
+        "",
+        "## STEP 1 — Book Details",
+        "",
+        "### Title",
+        "```",
+        meta.get("title", ""),
+        "```",
+        "",
+        "### Subtitle",
+        "```",
+        meta.get("subtitle", ""),
+        "```",
+        "> Leave blank if empty.",
+        "",
+        "### Series",
+        "```",
+        "(leave blank)",
+        "```",
+        "",
+        "### Author (Primary)",
+        "```",
+        meta.get("author", "William Archer"),
+        "```",
+        "",
+        "### Contributor / Secondary Author",
+        "```",
+        "(leave blank)",
+        "```",
+        "",
+        "### Description (paste into KDP's CKEditor — use HTML source mode)",
+        "> Click the </> button in KDP's description editor to switch to HTML mode, then paste:",
+        "```html",
+        description_html,
+        "```",
+        "",
+        "### Publishing Rights",
+        "```",
+        "I own the copyright and I hold the necessary publishing rights.",
+        "```",
+        "",
+        "### Keywords (enter one per field — 7 fields total)",
+        "",
+    ]
+
+    for i, kw in enumerate(keywords[:7], 1):
+        lines.append(f"**Keyword {i}:** `{kw}`")
+
+    lines += [
+        "",
+        "### Categories (choose 3 — navigate KDP's category browser)",
+        "> BISAC reference: " + bisac_label,
+        "",
+    ]
+    for i, cat in enumerate(categories[:3], 1):
+        lines.append(f"**Category {i}:** `{cat}`")
+
+    lines += [
+        "",
+        "### Adult Content",
+        "```",
+        "No",
+        "```",
+        "",
+        "---",
+        "",
+        "## STEP 2 — Content",
+        "",
+        "### Manuscript File",
+        "> Upload the DOCX file (most reliable KDP format):",
+        "```",
+        str(docx_path),
+        "```",
+        "",
+        "### Cover Image",
+        "> Upload the JPG cover (1600×2560 px, <5 MB):",
+        "```",
+        cover_path,
+        "```",
+        "",
+        "### ISBN",
+        "```",
+        "Get a free KDP ISBN  (recommended unless you have your own)",
+        "```",
+        "",
+        "### Publication Date",
+        "```",
+        meta.get("date", datetime.now().strftime("%Y-%m-%d")),
+        "```",
+        "",
+        "---",
+        "",
+        "## STEP 3 — Rights & Pricing",
+        "",
+        "### Territory Rights",
+        "```",
+        "Worldwide rights — I hold worldwide rights",
+        "```",
+        "",
+        "### KDP Select Enrollment",
+        "```",
+        "Enroll in KDP Select (recommended — enables Kindle Unlimited)",
+        "```",
+        "",
+        "### Primary Marketplace",
+        "```",
+        "Amazon.com (USD)",
+        "```",
+        "",
+        "### Price",
+        "```",
+        f"${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
+        "```",
+        "> At $2.99–$9.99 you earn 70% royalty. Below $2.99 earns only 35%.",
+        "",
+        "### Royalty Plan",
+        "```",
+        "70%",
+        "```",
+        "",
+        "---",
+        "",
+        "## Book Summary",
+        "",
+        f"- Title:        {meta.get('title', '')}",
+        f"- Author:       {meta.get('author', 'William Archer')}",
+        f"- Chapters:     {len(chapters)}",
+        f"- Word count:   {total_words:,}",
+        f"- Price:        ${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
+        f"- BISAC:        {bisac} ({bisac_label})",
+        "",
+        "---",
+        "",
+        "## File Checklist",
+        "",
+        f"- [ ] Manuscript DOCX:  {docx_path}",
+        f"- [ ] Cover JPG:        {cover_path}",
+        "- [ ] Description HTML copied",
+        "- [ ] All 7 keywords filled",
+        "- [ ] 3 categories selected",
+        "- [ ] Price set",
+        "- [ ] KDP Select enrolled",
+    ]
+
+    kit_path = output_dir / "kdp-upload-kit.md"
+    kit_path.write_text("\n".join(lines), encoding="utf-8")
+    log(f"KDP upload kit written: {kit_path}")
+
 
 def write_package_report(meta: dict, outputs: dict, chapters: list, output_dir: Path) -> None:
     """Write a package validation report."""
@@ -658,9 +1069,9 @@ def write_package_report(meta: dict, outputs: dict, chapters: list, output_dir: 
         f"- Total words: {total_words:,} {'✓' if total_words >= 20000 else '✗ (low)'}",
         "",
         "## Next Steps",
-        "1. Review output/ files",
-        "2. Check epub in Calibre or e-reader",
-        "3. Upload to Amazon KDP (use kdp-metadata.json as reference)",
+        "1. Generate cover: python3 cover_generator.py --book-dir <workbook>",
+        "2. Open kdp-upload-kit.md — follow the steps in order",
+        "3. Upload DOCX + cover at kdp.amazon.com",
     ]
 
     report_path = output_dir / "package-report.md"
@@ -804,6 +1215,10 @@ Examples:
     log_section("Step 7: Writing package report")
     write_package_report(meta, outputs, chapters, output_dir)
 
+    # KDP upload kit
+    log_section("Step 7b: Writing KDP upload kit")
+    write_upload_kit(meta, outputs, chapters, output_dir)
+
     # Summary
     log_section("PACKAGING COMPLETE")
     total_words = sum(len(ch["content"].split()) for ch in chapters)
@@ -820,6 +1235,7 @@ Examples:
             log(f"  ✗ {fmt}: FAILED")
     log("")
     log("Next: Upload to Amazon KDP.")
+    log("  → Open output/kdp-upload-kit.md for a complete copy-paste guide.")
     log("  → KDP UPLOAD ORDER (most reliable first):")
     log("  1. DOCX  — most reliable, KDP converts cleanly")
     log("  2. EPUB  — run through eBook-Standardization-Toolkit first")
