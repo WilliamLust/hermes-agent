@@ -46,7 +46,7 @@ LEARNING_FILE_PATHS = [
     Path.home() / "books" / "factory" / "LEARNING.md",
 ]
 
-DEFAULT_MODEL = "qwen3.5:35b-a3b-q4_k_m"
+DEFAULT_MODEL = "qwen3.5:27b-16k"
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 API_CHAT = f"{OLLAMA_BASE}/api/chat"
 
