@@ -365,9 +365,32 @@ hermes /model local-localhost:11434/qwen3.5:35b-a3b-q4_k_m
 5. Switch default model to qwen3.5:35b-a3b-q4_k_m
 ```
 
-### What Is Done
+### What Is Done (as of 2026-04-16)
 ```
-✓ Outliner agent (orchestrator.py) — generates 01_outline.md
+✓ Outliner agent — ~/.hermes/skills/ebook-factory/skills/outliner/orchestrator.py
+✓ Analyzer agent — ~/.hermes/hermes_skills/analyzer/orchestrator.py (NOT on GitHub yet)
+✓ Planner agent  — ~/.hermes/hermes_skills/planner/orchestrator.py (NOT on GitHub yet)
+✓ Chapter-Builder — ~/.hermes/ebook-factory/skills/chapter-builder/chapter_builder.py
+✓ Packager — ~/.hermes/ebook-factory/skills/packager/packager.py
+✓ Researcher v2 (BSR-integrated) — ~/.hermes/ebook-factory/skills/researcher/researcher.py
+✓ Telegram Review Workflow — ~/.hermes/ebook-factory/skills/telegram-review/review_workflow.py
+✓ Cover Generator (Ideogram+Pillow) — ~/.hermes/ebook-factory/skills/cover-generator/cover_generator.py
+✓ KDP Upload Helper (Playwright) — ~/.hermes/ebook-factory/skills/kdp-upload/kdp_upload.py
+✓ Self-Improvement Agent (weekly cron) — ~/.hermes/ebook-factory/skills/self-improvement/self_improvement.py
+✓ 12 published books — voice reference at ~/books/factory/references/published-books/
+✓ Book 13 complete — Productivity for ADHD Adults (26,694 words, packaged, ready for KDP upload)
+✓ GitHub checkpoint — https://github.com/WilliamLust/hermes-agent (commit aa9caea2)
+✓ Ollama running with qwen3.5:35b-a3b-q4_k_m (MoE, 23GB, 262k ctx)
+
+### Known Issues / Next Session TODO
+- Analyzer + Planner not committed to GitHub yet — add in next session
+- Test Analyzer + Planner end-to-end (status uncertain from prior sessions)
+- Chapter-Builder word count: 35B model lands 5-10% short; set outline targets to 3100 words
+- Consider testing qwen3.5:27b-16k for chapter drafting — may be faster/more consistent
+- KDP credentials set in ~/.hermes/.env — password was recently changed
+- NVIDIA persistence mode: run `sudo nvidia-smi -pm 1` after each reboot
+- Cover generator: parenting palette needs work (too generic/abstract background)
+```
 ✓ Refiner agent (refiner.py) — iterative refinement loop
 ✓ Old drafter (orchestrator.py in draft-chapter/) — superseded by new Chapter-Builder
 ✓ 12 published books — voice reference material exists
