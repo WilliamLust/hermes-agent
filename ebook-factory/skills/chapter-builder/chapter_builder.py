@@ -46,6 +46,8 @@ LEARNING_FILE_PATHS = [
     Path.home() / "books" / "factory" / "LEARNING.md",
 ]
 
+VOICE_ANCHOR_PATH = Path.home() / "books" / "factory" / "voice-anchor.md"
+
 DEFAULT_MODEL = "qwen3.5:27b-16k"
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 API_CHAT = f"{OLLAMA_BASE}/api/chat"
@@ -120,13 +122,44 @@ def load_learning_data() -> str:
 
 
 def load_voice_reference(workbook_dir: Path) -> str:
-    """Load chapter-01 from w-polished/ as voice reference."""
+    """
+    Load voice reference for chapter drafting.
+
+    Priority:
+      1. ~/books/factory/voice-anchor.md  — house style, always available,
+                                            consistent across every book
+      2. workbook/w-polished/chapter-01.md — approved chapter from this book
+                                             (used as supplementary context if
+                                             voice-anchor exists, primary if not)
+
+    The voice anchor is the authoritative source. It captures the catalog-wide
+    voice distilled from all published books. Chapter-01 supplements it with
+    book-specific tone once chapter 1 has been approved.
+    """
+    anchor = ""
+    chapter1 = ""
+
+    if VOICE_ANCHOR_PATH.exists():
+        anchor = VOICE_ANCHOR_PATH.read_text(encoding="utf-8")
+        log(f"Loaded voice anchor: {VOICE_ANCHOR_PATH}")
+    else:
+        log(f"WARNING: voice-anchor.md not found at {VOICE_ANCHOR_PATH}")
+
     ref = workbook_dir / "w-polished" / "chapter-01.md"
     if ref.exists():
-        content = ref.read_text(encoding="utf-8")
-        log(f"Loaded voice reference: {ref}")
-        return content[:2000]  # Cap at 2000 chars
-    return ""
+        chapter1 = ref.read_text(encoding="utf-8")[:1500]
+        log(f"Loaded chapter-01 voice supplement: {ref}")
+
+    if anchor and chapter1:
+        # Both available: anchor sets the style, chapter-01 shows book-specific tone
+        return anchor + "\n\n## Book-Specific Voice Sample (Chapter 1 of this book):\n" + chapter1
+    elif anchor:
+        return anchor
+    elif chapter1:
+        return chapter1
+    else:
+        log("WARNING: No voice reference available — drafting without style anchor")
+        return ""
 
 
 # ============================================================================
@@ -253,7 +286,7 @@ def build_draft_prompt(chapter: dict, learning_data: str, voice_ref: str) -> str
     voice_section = ""
     if voice_ref:
         voice_section = f"""
-VOICE & STYLE REFERENCE (match this tone exactly):
+VOICE & STYLE REQUIREMENTS (this is non-negotiable — match exactly):
 ---
 {voice_ref}
 ---
@@ -464,12 +497,18 @@ def build_output(chapter: dict, content: str, iterations: int, issues_remaining:
 # MAIN PIPELINE
 # ============================================================================
 
-def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool) -> int:
+def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
+                   critique: str = "") -> int:
     """
     Full chapter-building pipeline for one chapter.
     Returns 0 on success, 1 on failure.
+
+    critique: optional human feedback string. When provided, the chapter is
+              regenerated with this critique prepended to the first refinement
+              prompt, forcing the model to address specific issues.
     """
-    log_section(f"Chapter-Builder: Chapter {chapter_num}")
+    log_section(f"Chapter-Builder: Chapter {chapter_num}"
+                + (" [CRITIQUE MODE]" if critique else ""))
 
     # --- Find outline ---
     outline_path = workbook_dir / "01_outline.md"
@@ -498,6 +537,18 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool)
     log_section(f"Phase 1: Drafting Chapter {chapter_num}")
     prompt = build_draft_prompt(chapter, learning_data, voice_ref)
     content = call_ollama(prompt, model)
+
+    # --- Critique injection: treat human critique as the first refinement issue ---
+    if critique and content:
+        log_section(f"Phase 1b: Applying human critique")
+        log(f"Critique: {critique}")
+        critique_prompt = build_refinement_prompt(content, [f"HUMAN CRITIQUE: {critique}"], chapter)
+        refined = call_ollama(critique_prompt, model, num_predict=8000)
+        if refined:
+            content = refined
+            log("Critique applied successfully")
+        else:
+            log("WARNING: Critique refinement returned empty — using original draft")
 
     # --- Validate + Refine Loop ---
     iteration = 0
@@ -559,6 +610,7 @@ Examples:
   python3 chapter_builder.py --chapter 1 --force
   python3 chapter_builder.py --chapter 3 --book-dir ~/.hermes/ebook-factory/workbooks/book-my-topic/
   python3 chapter_builder.py --chapter 5 --model qwen3.5:27b-8k
+  python3 chapter_builder.py --chapter 4 --force --critique "Too abstract. Add real numbers and named studies."
 
 Parallel execution:
   for ch in 1 2 3; do python3 chapter_builder.py --chapter $ch & done; wait
@@ -572,8 +624,16 @@ Parallel execution:
                         help=f"Ollama model name (default: {DEFAULT_MODEL})")
     parser.add_argument("--force", action="store_true",
                         help="Overwrite existing chapter file without confirmation")
+    parser.add_argument("--critique", type=str, default="",
+                        help="Your critique of the existing chapter. Forces a rewrite "
+                             "with this feedback prepended to the refinement prompt. "
+                             "Implies --force.")
 
     args = parser.parse_args()
+
+    # --critique implies --force (we need to overwrite to apply the critique)
+    if args.critique:
+        args.force = True
 
     # Determine workbook directory
     if args.book_dir:
@@ -585,9 +645,12 @@ Parallel execution:
         log(f"Auto-detected workbook: {workbook_dir.name}")
 
     log(f"Working in: {workbook_dir}")
+    if args.critique:
+        log(f"Critique mode: '{args.critique[:80]}{'...' if len(args.critique) > 80 else ''}'")
 
     try:
-        exit_code = build_chapter(args.chapter, workbook_dir, args.model, args.force)
+        exit_code = build_chapter(args.chapter, workbook_dir, args.model, args.force,
+                                   critique=args.critique)
         sys.exit(exit_code)
     except KeyboardInterrupt:
         print("\nInterrupted by user.", flush=True)

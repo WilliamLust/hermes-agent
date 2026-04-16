@@ -405,6 +405,100 @@ def validate_outline(outline: str, num_chapters: int) -> list:
     return issues
 
 
+# Phrases that indicate a section example is a placeholder, not a real example
+_VAGUE_EXAMPLE_PATTERNS = [
+    r"\*\*Example:\*\*\s*Key example\b",
+    r"\*\*Example:\*\*\s*Success story\b",
+    r"\*\*Example:\*\*\s*Step-by-step\b",
+    r"\*\*Example:\*\*\s*Case study\b",
+    r"\*\*Example:\*\*\s*Real-world example\b",
+    r"\*\*Example:\*\*\s*Industry example\b",
+    r"\*\*Example:\*\*\s*Market data\b",
+    r"\*\*Example:\*\*\s*Tool list\b",
+    r"\*\*Example:\*\*\s*Synthesis\b",
+    r"\*\*Example:\*\*\s*Transition hook\b",
+    r"\*\*Example:\*\*\s*Opening scenario\b",
+    r"\*\*Example:\*\*\s*Troubleshooting guide\b",
+    r"\*\*Example:\*\*\s*Bridge to next\b",
+    r"\*\*Example:\*\*\s*30-day plan\b",
+    r"\*\*Example:\*\*\s*Call to action\b",
+]
+
+
+def find_vague_sections(outline: str) -> list[tuple[str, str]]:
+    """
+    Find sections with placeholder examples rather than specific scenarios.
+    Returns list of (chapter_title, section_name) tuples for vague sections.
+    """
+    vague = []
+    # Walk chapter by chapter
+    chapters = re.split(r"(?=^## Chapter \d+:)", outline, flags=re.MULTILINE)
+    for chapter_block in chapters:
+        ch_title_m = re.search(r"^## Chapter \d+:\s*(.+)", chapter_block, re.MULTILINE)
+        ch_title = ch_title_m.group(1).strip() if ch_title_m else "Unknown Chapter"
+
+        # Walk section by section within the chapter
+        sections = re.split(r"(?=^\d+\.\s+\*\*\[)", chapter_block, flags=re.MULTILINE)
+        for section_block in sections:
+            sec_title_m = re.search(r"\*\*\[(.+?)\]\*\*", section_block)
+            sec_title = sec_title_m.group(1).strip() if sec_title_m else ""
+            if not sec_title:
+                continue
+            for pat in _VAGUE_EXAMPLE_PATTERNS:
+                if re.search(pat, section_block, re.IGNORECASE):
+                    vague.append((ch_title, sec_title))
+                    break  # one match per section is enough
+
+    return vague
+
+
+def regenerate_vague_sections(outline: str, vague: list[tuple[str, str]],
+                               topic: dict) -> str | None:
+    """
+    Ask Qwen 35B to rewrite only the vague sections with specific examples.
+    Returns the improved outline, or None if Ollama is unavailable.
+    """
+    if not vague:
+        return outline
+
+    # Build a targeted list for the model
+    vague_list = "\n".join(
+        f"  - Chapter '{ch}', Section '{sec}'" for ch, sec in vague
+    )
+    title = topic.get("title", "Unknown")
+
+    system = (
+        "You are a nonfiction book editor. You receive a book outline with placeholder "
+        "examples and replace them with specific, concrete scenarios. "
+        "You ONLY rewrite the Example lines of the specified sections. "
+        "You do not change any other content. "
+        "Output the complete outline with the vague examples replaced."
+    )
+
+    user = (
+        f"This outline is for: '{title}'\n\n"
+        f"These sections have placeholder examples that need to be specific and concrete:\n"
+        f"{vague_list}\n\n"
+        f"Rules for the replacements:\n"
+        f"- Each example must describe a real scenario, name a specific technique, "
+        f"cite a study or data point, or give a concrete before/after\n"
+        f"- Do not use generic labels like 'Key example' or 'Success story'\n"
+        f"- Keep the same length as the original example field (~1-2 sentences)\n"
+        f"- Match the specificity of good examples already in the outline\n\n"
+        f"Here is the full outline:\n\n{outline}\n\n"
+        f"Return the complete outline with ONLY the vague examples replaced. "
+        f"Do not change anything else."
+    )
+
+    log(f"Regenerating {len(vague)} vague section(s) via Qwen 35B...")
+    improved = ollama_call(user, system, OUTLINE_MODEL,
+                           num_predict=len(outline.split()) * 2, temperature=0.7)
+    if improved and len(improved) > len(outline) * 0.7:
+        return improved
+    log("WARNING: Regeneration returned too-short result — keeping original outline")
+    return outline
+
+
 # ======================================================================
 # MAIN
 # ======================================================================
@@ -481,10 +575,26 @@ def main():
         for issue in issues:
             warning(f"  Issue: {issue}")
         if any("Template contamination" in i for i in issues):
-            warning("Template contamination found — outline quality may be degraded. "
-                    "Re-run or review manually before proceeding.")
+            warning("Template contamination found — outline quality may be degraded.")
     else:
-        log("  Validation PASSED — outline looks clean")
+        log("  Structural validation PASSED")
+
+    # Step 4b: Find and fix vague section examples
+    log_section("Step 4b: Checking for placeholder examples")
+    vague = find_vague_sections(outline)
+    if vague:
+        log(f"  Found {len(vague)} vague section(s):")
+        for ch, sec in vague:
+            log(f"    - '{sec}' in '{ch}'")
+        outline = regenerate_vague_sections(outline, vague, selected)
+        # Re-check after fix
+        remaining = find_vague_sections(outline)
+        if remaining:
+            warning(f"  {len(remaining)} section(s) still vague after fix attempt — continuing anyway")
+        else:
+            log(f"  All {len(vague)} vague section(s) resolved")
+    else:
+        log("  No placeholder examples found — outline is specific throughout")
 
     # Step 5: Create workbook & write outline
     log_section("Step 5: Creating workbook")

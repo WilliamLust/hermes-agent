@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""
+Production Orchestrator — runs the full ebook factory pipeline for one book.
+
+Reads the next approved topic from ~/books/factory/approved_topics.md,
+runs outliner → chapter-builder (parallel) → packager → cover-generator,
+marks the topic done, and notifies via Telegram.
+
+Usage:
+    python3 run_pipeline.py                  # process next approved topic
+    python3 run_pipeline.py --dry-run        # show what would run
+    python3 run_pipeline.py --topic "Title"  # override (skip queue, use this)
+    python3 run_pipeline.py --niche health   # paired with --topic
+    python3 run_pipeline.py --chapters 10    # override chapter count
+    python3 run_pipeline.py --list           # show approved queue
+"""
+
+import os
+import sys
+import re
+import json
+import time
+import shlex
+import subprocess
+import argparse
+import requests
+from pathlib import Path
+from datetime import datetime
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+
+HERMES_HOME      = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+FACTORY_DIR      = Path.home() / "books" / "factory"
+APPROVED_TOPICS  = FACTORY_DIR / "approved_topics.md"
+PRODUCED_TOPICS  = FACTORY_DIR / "produced_topics.md"
+WORKBOOKS_DIR    = HERMES_HOME / "ebook-factory" / "workbooks"
+
+SKILLS_BASE      = HERMES_HOME / "ebook-factory" / "skills"
+OUTLINER         = HERMES_HOME / "skills" / "ebook-factory" / "skills" / "outliner" / "orchestrator.py"
+CHAPTER_BUILDER  = SKILLS_BASE / "chapter-builder" / "chapter_builder.py"
+PACKAGER         = SKILLS_BASE / "packager" / "packager.py"
+COVER_GENERATOR  = SKILLS_BASE / "cover-generator" / "cover_generator.py"
+
+VENV_PYTHON      = Path.home() / "hermes-agent" / "venv" / "bin" / "python3"
+PYTHON           = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+
+# ── Env / Telegram ─────────────────────────────────────────────────────────────
+
+def load_env() -> dict:
+    env = {}
+    for p in [HERMES_HOME / ".env", Path.home() / ".hermes" / ".env"]:
+        if p.exists():
+            for line in p.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    env[k.strip()] = v.strip()
+    env.update(os.environ)
+    return env
+
+ENV = load_env()
+TELEGRAM_TOKEN   = ENV.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = ENV.get("TELEGRAM_CHAT_ID", "")
+
+
+def notify(msg: str):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def log_section(title):
+    print(f"\n{'='*60}\n  {title}\n{'='*60}", flush=True)
+
+def die(msg):
+    print(f"\n[ERROR] {msg}", file=sys.stderr, flush=True)
+    notify(f"❌ *Pipeline ERROR*\n{msg}")
+    sys.exit(1)
+
+# ── Queue management ───────────────────────────────────────────────────────────
+
+def parse_queue(path: Path) -> list[dict]:
+    """Parse approved_topics.md into a list of topic dicts."""
+    if not path.exists():
+        return []
+
+    content = path.read_text(encoding="utf-8")
+    topics = []
+
+    # Split on --- separators
+    blocks = re.split(r"^---\s*$", content, flags=re.MULTILINE)
+    for block in blocks:
+        block = block.strip()
+        if not block or block.startswith("#"):
+            continue
+
+        topic = {}
+
+        # Skip DONE entries
+        if re.search(r"^status:\s*DONE", block, re.IGNORECASE | re.MULTILINE):
+            continue
+
+        title_m = re.search(r"^title:\s*(.+)", block, re.MULTILINE)
+        niche_m = re.search(r"^niche:\s*(.+)", block, re.MULTILINE)
+        ch_m    = re.search(r"^chapters:\s*(\d+)", block, re.MULTILINE)
+        notes_m = re.search(r"^notes:\s*(.+)", block, re.MULTILINE)
+
+        if title_m:
+            topic["title"]    = title_m.group(1).strip()
+            topic["niche"]    = niche_m.group(1).strip() if niche_m else "self-help"
+            topic["chapters"] = int(ch_m.group(1)) if ch_m else 10
+            topic["notes"]    = notes_m.group(1).strip() if notes_m else ""
+            topic["raw"]      = block
+            topics.append(topic)
+
+    return topics
+
+
+def mark_done(topic: dict):
+    """Mark a topic as DONE in approved_topics.md."""
+    if not APPROVED_TOPICS.exists():
+        return
+    content = APPROVED_TOPICS.read_text(encoding="utf-8")
+    # Add status: DONE to the raw block
+    updated_block = topic["raw"] + "\nstatus: DONE"
+    content = content.replace(topic["raw"], updated_block, 1)
+    APPROVED_TOPICS.write_text(content, encoding="utf-8")
+    log(f"Marked DONE in queue: {topic['title']}")
+
+
+def append_to_produced(topic: dict, workbook_dir: Path):
+    """Append a completed book to produced_topics.md."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    output_dir = workbook_dir / "output"
+    entry = (
+        f"\n---\n"
+        f"title: {topic['title']}\n"
+        f"niche: {topic['niche']}\n"
+        f"completed: {timestamp}\n"
+        f"output: {output_dir}\n"
+        f"upload_kit: {output_dir / 'kdp-upload-kit.md'}\n"
+    )
+    with open(PRODUCED_TOPICS, "a", encoding="utf-8") as f:
+        f.write(entry)
+    log(f"Appended to produced log: {topic['title']}")
+
+
+def list_queue():
+    topics = parse_queue(APPROVED_TOPICS)
+    if not topics:
+        print("Queue is empty. Add topics to ~/books/factory/approved_topics.md")
+        return
+    print(f"\n{'#':<4} {'Title':<55} {'Niche':<15} {'Ch':>3}")
+    print("-" * 82)
+    for i, t in enumerate(topics, 1):
+        title = t['title'][:52] + "..." if len(t['title']) > 55 else t['title']
+        print(f"{i:<4} {title:<55} {t['niche']:<15} {t['chapters']:>3}")
+    print(f"\n{len(topics)} topic(s) in queue.")
+
+# ── Pipeline steps ─────────────────────────────────────────────────────────────
+
+def run_step(label: str, cmd: list[str], timeout: int = 600) -> bool:
+    """Run a subprocess step. Returns True on success."""
+    log_section(label)
+    log(f"Running: {' '.join(shlex.quote(c) for c in cmd)}")
+    start = time.time()
+    try:
+        result = subprocess.run(cmd, timeout=timeout, check=False)
+        elapsed = round(time.time() - start, 1)
+        if result.returncode == 0:
+            log(f"  DONE in {elapsed}s")
+            return True
+        else:
+            log(f"  FAILED (exit {result.returncode}) after {elapsed}s")
+            return False
+    except subprocess.TimeoutExpired:
+        log(f"  TIMEOUT after {timeout}s")
+        return False
+    except Exception as e:
+        log(f"  ERROR: {e}")
+        return False
+
+
+def find_workbook(title: str) -> Path | None:
+    """Find the workbook directory for a given title."""
+    if not WORKBOOKS_DIR.exists():
+        return None
+    slug_words = re.sub(r"[^a-z0-9\s]", "", title.lower()).split()
+    slug = "-".join(slug_words)[:60]
+    # Try exact slug match first
+    for d in WORKBOOKS_DIR.iterdir():
+        if d.is_dir() and d.name.startswith("book-") and slug[:20] in d.name:
+            return d
+    # Fall back to most recently modified
+    dirs = [d for d in WORKBOOKS_DIR.iterdir() if d.is_dir() and d.name.startswith("book-")]
+    if dirs:
+        return sorted(dirs, key=lambda d: d.stat().st_mtime, reverse=True)[0]
+    return None
+
+
+def run_outliner(topic: dict, dry_run: bool) -> bool:
+    cmd = [
+        PYTHON, str(OUTLINER),
+        "--topic", topic["title"],
+        "--niche", topic["niche"],
+        "--chapters", str(topic["chapters"]),
+    ]
+    if dry_run:
+        log(f"[DRY RUN] Would run: {' '.join(cmd)}")
+        return True
+    return run_step("Outliner", cmd, timeout=600)
+
+
+def run_chapter_builder(workbook_dir: Path, num_chapters: int, dry_run: bool) -> bool:
+    """Run all chapters in parallel using subprocess."""
+    log_section(f"Chapter Builder (chapters 1-{num_chapters} in parallel)")
+    if dry_run:
+        log(f"[DRY RUN] Would run {num_chapters} chapter-builder processes in parallel")
+        return True
+
+    procs = []
+    for ch in range(1, num_chapters + 1):
+        cmd = [
+            PYTHON, str(CHAPTER_BUILDER),
+            "--chapter", str(ch),
+            "--book-dir", str(workbook_dir),
+        ]
+        log(f"  Starting chapter {ch}...")
+        p = subprocess.Popen(cmd)
+        procs.append((ch, p))
+
+    # Wait for all
+    failed = []
+    for ch, p in procs:
+        try:
+            p.wait(timeout=1800)  # 30 min max per chapter
+            if p.returncode != 0:
+                failed.append(ch)
+                log(f"  Chapter {ch}: FAILED (exit {p.returncode})")
+            else:
+                log(f"  Chapter {ch}: DONE")
+        except subprocess.TimeoutExpired:
+            p.kill()
+            failed.append(ch)
+            log(f"  Chapter {ch}: TIMEOUT — killed")
+
+    if failed:
+        log(f"WARNING: {len(failed)} chapter(s) failed: {failed}")
+        log("Continuing to packager with available chapters...")
+        return len(failed) < num_chapters // 2  # tolerate up to half failing
+
+    log(f"All {num_chapters} chapters completed")
+    return True
+
+
+def run_packager(workbook_dir: Path, dry_run: bool) -> bool:
+    cmd = [PYTHON, str(PACKAGER), "--book-dir", str(workbook_dir)]
+    if dry_run:
+        log(f"[DRY RUN] Would run packager on {workbook_dir}")
+        return True
+    return run_step("Packager", cmd, timeout=300)
+
+
+def run_cover_generator(workbook_dir: Path, dry_run: bool) -> bool:
+    cmd = [PYTHON, str(COVER_GENERATOR), "--book-dir", str(workbook_dir)]
+    if dry_run:
+        log(f"[DRY RUN] Would run cover generator on {workbook_dir}")
+        return True
+    return run_step("Cover Generator", cmd, timeout=180)
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Ebook Factory Production Orchestrator")
+    parser.add_argument("--dry-run",  action="store_true", help="Show steps without running")
+    parser.add_argument("--topic",    type=str, default="",  help="Override: specify topic directly")
+    parser.add_argument("--niche",    type=str, default="self-help", help="Niche (with --topic)")
+    parser.add_argument("--chapters", type=int, default=10,  help="Chapter count override")
+    parser.add_argument("--list",     action="store_true", help="List approved queue and exit")
+    args = parser.parse_args()
+
+    if args.list:
+        list_queue()
+        return 0
+
+    log_section("Ebook Factory — Production Orchestrator")
+
+    # Resolve topic
+    if args.topic:
+        topic = {
+            "title":    args.topic,
+            "niche":    args.niche,
+            "chapters": args.chapters,
+            "notes":    "",
+            "raw":      "",
+        }
+        log(f"Topic (override): {topic['title']}")
+    else:
+        queue = parse_queue(APPROVED_TOPICS)
+        if not queue:
+            die(
+                "No approved topics in queue.\n"
+                f"Add topics to {APPROVED_TOPICS}\n"
+                "Or use: python3 run_pipeline.py --topic 'Title' --niche productivity"
+            )
+        topic = queue[0]
+        log(f"Topic (from queue): {topic['title']}")
+        log(f"Queue depth: {len(queue)} topic(s) remaining")
+
+    log(f"Niche: {topic['niche']} | Chapters: {topic['chapters']}")
+    if topic.get("notes"):
+        log(f"Notes: {topic['notes']}")
+
+    start_time = time.time()
+    notify(
+        f"🏭 *Pipeline starting*\n"
+        f"Book: _{topic['title']}_\n"
+        f"Niche: {topic['niche']} | Chapters: {topic['chapters']}"
+    )
+
+    # ── Step 1: Outliner ──────────────────────────────────────────────────────
+    if not run_outliner(topic, args.dry_run):
+        die(f"Outliner failed for: {topic['title']}")
+
+    # ── Locate workbook ───────────────────────────────────────────────────────
+    workbook_dir = None
+    if not args.dry_run:
+        workbook_dir = find_workbook(topic["title"])
+        if not workbook_dir:
+            die(f"Could not find workbook directory after outliner ran.")
+        log(f"Workbook: {workbook_dir}")
+
+    # ── Step 2: Chapter Builder ───────────────────────────────────────────────
+    if not run_chapter_builder(workbook_dir or Path("/tmp"), topic["chapters"], args.dry_run):
+        die(f"Chapter builder critically failed — too many chapters missing.")
+
+    # ── Step 3: Packager ─────────────────────────────────────────────────────
+    if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
+        log("WARNING: Packager failed — output may be incomplete. Continuing.")
+
+    # ── Step 4: Cover Generator ───────────────────────────────────────────────
+    if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run):
+        log("WARNING: Cover generator failed — generate cover manually.")
+
+    # ── Done ──────────────────────────────────────────────────────────────────
+    elapsed = round(time.time() - start_time)
+    mins, secs = divmod(elapsed, 60)
+
+    if not args.dry_run and workbook_dir:
+        mark_done(topic)
+        append_to_produced(topic, workbook_dir)
+        output_dir = workbook_dir / "output"
+
+        log_section("PIPELINE COMPLETE")
+        log(f"Book:    {topic['title']}")
+        log(f"Time:    {mins}m {secs}s")
+        log(f"Output:  {output_dir}")
+        log(f"")
+        log(f"Files ready for upload:")
+        for f in sorted(output_dir.iterdir()):
+            if f.suffix in (".docx", ".jpg") or f.name == "kdp-upload-kit.md":
+                log(f"  ✓ {f.name}")
+
+        notify(
+            f"✅ *Book complete!*\n"
+            f"_{topic['title']}_\n\n"
+            f"⏱ {mins}m {secs}s\n"
+            f"📁 `{output_dir}`\n\n"
+            f"Open `kdp-upload-kit.md` to upload."
+        )
+    else:
+        log_section("DRY RUN COMPLETE — no files written")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
