@@ -1,475 +1,465 @@
-# Hermes Agent - Development Guide
-## 📘 Active Project Context: Ebook Factory Pipeline
-When working on ebook generation tasks, **always load and reference**:
-`~/.hermes/ebook-factory/FACTORY-PIPELINE-PLAN.md`
+# Hermes Agent — Development Guide & Ebook Factory Operations Manual
 
-This file defines the 3-layer factory architecture, agent roles, file structure, and implementation timeline.
-Do not proceed with ebook tasks without consulting this blueprint.
-Instructions for AI coding assistants and developers working on the hermes-agent codebase.
+**Last Updated:** 2026-04-15
+**Status:** Active — Pipeline Build Phase
+**Owner:** bookforge (William Archer)
 
-## Development Environment
+---
 
+## CRITICAL: READ THIS FIRST (Every Session)
+
+This file is the master reference for EVERYTHING on this machine. Before doing anything, read this file completely. If you are a local model (Qwen, etc.) running Hermes, you must follow this document precisely. Do not improvise. Do not create new directories. Do not install new tools. Follow the established patterns.
+
+**The Goal:** Finish building the Ebook Factory pipeline so it can run autonomously on a local model (qwen3.5:35b-a3b-q4_k_m via Ollama). The pipeline is designed to generate, validate, and package commercial ebooks for Amazon KDP with minimal human intervention.
+
+---
+
+## 1. MACHINE & ENVIRONMENT
+
+```
+OS:         Linux Mint (x86_64)
+User:       bookforge
+Home:       /home/bookforge/
+GPU:        NVIDIA (runs ComfyUI + Ollama)
+Hermes:     v0.9.0 at ~/hermes-agent/ (venv at ~/hermes-agent/venv/)
+Config:     ~/.hermes/config.yaml
+Keys/Env:   ~/.hermes/.env
+```
+
+### Active Binary
+```
+hermes = ~/hermes-agent/venv/bin/hermes
+```
+Always activate before running Python scripts that use hermes internals:
 ```bash
-source venv/bin/activate  # ALWAYS activate before running Python
+source ~/hermes-agent/venv/bin/activate
 ```
 
-## Project Structure
-
+### Local Models (Ollama at http://localhost:11434)
 ```
-hermes-agent/
-├── run_agent.py          # AIAgent class — core conversation loop
-├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
-├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
-├── cli.py                # HermesCLI class — interactive CLI orchestrator
-├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
-├── agent/                # Agent internals
-│   ├── prompt_builder.py     # System prompt assembly
-│   ├── context_compressor.py # Auto context compression
-│   ├── prompt_caching.py     # Anthropic prompt caching
-│   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
-│   ├── model_metadata.py     # Model context lengths, token estimation
-│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
-│   ├── display.py            # KawaiiSpinner, tool preview formatting
-│   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
-│   └── trajectory.py         # Trajectory saving helpers
-├── hermes_cli/           # CLI subcommands and setup
-│   ├── main.py           # Entry point — all `hermes` subcommands
-│   ├── config.py         # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
-│   ├── commands.py       # Slash command definitions + SlashCommandCompleter
-│   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
-│   ├── setup.py          # Interactive setup wizard
-│   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
-│   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
-│   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
-│   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
-│   ├── models.py         # Model catalog, provider model lists
-│   ├── model_switch.py   # Shared /model switch pipeline (CLI + gateway)
-│   └── auth.py           # Provider credential resolution
-├── tools/                # Tool implementations (one file per tool)
-│   ├── registry.py       # Central tool registry (schemas, handlers, dispatch)
-│   ├── approval.py       # Dangerous command detection
-│   ├── terminal_tool.py  # Terminal orchestration
-│   ├── process_registry.py # Background process management
-│   ├── file_tools.py     # File read/write/search/patch
-│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
-│   ├── browser_tool.py   # Browserbase browser automation
-│   ├── code_execution_tool.py # execute_code sandbox
-│   ├── delegate_tool.py  # Subagent delegation
-│   ├── mcp_tool.py       # MCP client (~1050 lines)
-│   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
-├── gateway/              # Messaging platform gateway
-│   ├── run.py            # Main loop, slash commands, message dispatch
-│   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
-├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
-├── cron/                 # Scheduler (jobs.py, scheduler.py)
-├── environments/         # RL training environments (Atropos)
-├── tests/                # Pytest suite (~3000 tests)
-└── batch_runner.py       # Parallel batch processing
+qwen3.5:35b-a3b-q4_k_m ← PRIMARY (drafting, outlining, refining — MoE, fast, 262k ctx)
+qwen3.5:27b-16k    ← FALLBACK (if 35B too slow or VRAM pressure)
+qwen3.5:27b-8k     ← FALLBACK-2 (speed-critical tasks only)
+qwen3.5:27b-q4_K_M ← ALTERNATE name for 27b dense model
+qwen3.5:9b         ← Fast/light tasks only
 ```
 
-**User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys)
-
-## File Dependency Chain
-
+### API Keys (.env)
 ```
-tools/registry.py  (no deps — imported by all tool files)
-       ↑
-tools/*.py  (each calls registry.register() at import time)
-       ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
-       ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+ANTHROPIC_API_KEY     — Claude (primary for orchestration + building)
+FIRECRAWL_API_KEY     — Web research (hobby plan, 3000 credits/month)
+TELEGRAM_BOT_TOKEN    — @Hermes_Ebook_Factory_Bot (bot ID: 8751204976)
+TELEGRAM_CHAT_ID      — 1851466851 (William / @williamlust) — CONFIRMED WORKING
+IDEOGRAM_API_KEY      — Cover generation (sign up pending)
+KDP_EMAIL             — Amazon KDP login email (NOT YET SET)
+KDP_PASSWORD          — Amazon KDP login password (NOT YET SET)
 ```
 
 ---
 
-## AIAgent Class (run_agent.py)
+## 2. EBOOK FACTORY — SYSTEM OVERVIEW
 
-```python
-class AIAgent:
-    def __init__(self,
-        model: str = "anthropic/claude-opus-4.6",
-        max_iterations: int = 90,
-        enabled_toolsets: list = None,
-        disabled_toolsets: list = None,
-        quiet_mode: bool = False,
-        save_trajectories: bool = False,
-        platform: str = None,           # "cli", "telegram", etc.
-        session_id: str = None,
-        skip_context_files: bool = False,
-        skip_memory: bool = False,
-        # ... plus provider, api_mode, callbacks, routing params
-    ): ...
+### Purpose
+Automated pipeline to produce commercial ebooks (2500-3000 words/chapter, 10-12 chapters) for Amazon KDP. The factory takes a validated topic idea and produces a KDP-ready ebook package (EPUB, PDF, cover, metadata).
 
-    def chat(self, message: str) -> str:
-        """Simple interface — returns final response string."""
-
-    def run_conversation(self, user_message: str, system_message: str = None,
-                         conversation_history: list = None, task_id: str = None) -> dict:
-        """Full interface — returns dict with final_response + messages."""
+### Published Books (12 completed — in ~/books/factory/references/published-books/)
+```
+1. Time Blocking For Remote Workers
+2. The 80-20 Guide to Getting More Done
+3. Weekly Review Systems for Busy People
+4. Building a Second Brain on a Budget
+5. Gut Health Basics Without the Pseudoscience
+6. Walking for Weight Loss: The Underrated Strategy
+7. AI Tools for Everyday Productivity
+8. Protecting Your Digital Privacy Without Going Off-Grid
+9. The No-BS Guide to Home Network Security
+10. The Procrastination Fix
+11. Sleep Well Tonight
+12. Low-Income Chronic Fatigue Management
 ```
 
-### Agent Loop
-
-The core loop is inside `run_conversation()` — entirely synchronous:
-
-```python
-while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
-    response = client.chat.completions.create(model=model, messages=messages, tools=tool_schemas)
-    if response.tool_calls:
-        for tool_call in response.tool_calls:
-            result = handle_function_call(tool_call.name, tool_call.args, task_id)
-            messages.append(tool_result_message(result))
-        api_call_count += 1
-    else:
-        return response.content
+### Pipeline State Machine
+```
+PHASE 0: DISCOVERY         PHASE 1: CHAPTER FACTORY      PHASE 2: HUMAN REVIEW    PHASE 3: ASSEMBLY
+─────────────────────      ──────────────────────────     ─────────────────────    ─────────────────
+marketplace_analyzer   →   Outliner (01_outline.md)   →  Human approves        →  Packager
+topic_planner              Chapter-Builder x3-5           w-drafts → w-polished     final book + KDP
+topic_plan_*.md            (parallel agents)              (manual gate)             output/*
+[DONE]                     [OUTLINER DONE]                [MANUAL]                  [NEEDS BUILD]
+                           [CHAPTER-BUILDER NEEDS BUILD]
 ```
 
-Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Reasoning content is stored in `assistant_msg["reasoning"]`.
+### Agent Roles & Handoff Contracts
+```
+Agent           | Script Location                                    | Input                           | Output                    | Gate
+────────────────|────────────────────────────────────────────────────|─────────────────────────────────|───────────────────────────|─────────────────────────
+Outliner        | ~/.hermes/skills/ebook-factory/skills/outliner/    | topic_plan_*.md + LEARNING.md   | workbook/01_outline.md    | viability ≥6.0, 10-12 chapters
+                | orchestrator.py                                    |                                 |                           |
+Chapter-Builder | ~/.hermes/ebook-factory/skills/chapter-builder/    | 01_outline.md + LEARNING.md     | w-drafts/chapter-XX.md    | word count ±10%, all points covered
+                | chapter_builder.py                                 |                                 |                           |
+Human Review    | (manual)                                           | w-drafts/*                      | w-polished/* (approved)   | manual quality gate
+Packager        | ~/.hermes/ebook-factory/skills/packager/           | w-polished/* + metadata         | output/* (EPUB/PDF/KDP)   | format compliance
+                | packager.py                                        |                                 |                           |
+```
 
 ---
 
-## CLI Architecture (cli.py)
+## 3. FILE STRUCTURE (CANONICAL — DO NOT DEVIATE)
 
-- **Rich** for banner/panels, **prompt_toolkit** for input with autocomplete
-- **KawaiiSpinner** (`agent/display.py`) — animated faces during API calls, `┊` activity feed for tool results
-- `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML
-- **Skin engine** (`hermes_cli/skin_engine.py`) — data-driven CLI theming; initialized from `display.skin` config key at startup; skins customize banner colors, spinner faces/verbs/wings, tool prefix, response box, branding text
-- `process_command()` is a method on `HermesCLI` — dispatches on canonical command name resolved via `resolve_command()` from the central registry
-- Skill slash commands: `agent/skill_commands.py` scans `~/.hermes/skills/`, injects as **user message** (not system prompt) to preserve prompt caching
-
-### Slash Command Registry (`hermes_cli/commands.py`)
-
-All slash commands are defined in a central `COMMAND_REGISTRY` list of `CommandDef` objects. Every downstream consumer derives from this registry automatically:
-
-- **CLI** — `process_command()` resolves aliases via `resolve_command()`, dispatches on canonical name
-- **Gateway** — `GATEWAY_KNOWN_COMMANDS` frozenset for hook emission, `resolve_command()` for dispatch
-- **Gateway help** — `gateway_help_lines()` generates `/help` output
-- **Telegram** — `telegram_bot_commands()` generates the BotCommand menu
-- **Slack** — `slack_subcommand_map()` generates `/hermes` subcommand routing
-- **Autocomplete** — `COMMANDS` flat dict feeds `SlashCommandCompleter`
-- **CLI help** — `COMMANDS_BY_CATEGORY` dict feeds `show_help()`
-
-### Adding a Slash Command
-
-1. Add a `CommandDef` entry to `COMMAND_REGISTRY` in `hermes_cli/commands.py`:
-```python
-CommandDef("mycommand", "Description of what it does", "Session",
-           aliases=("mc",), args_hint="[arg]"),
 ```
-2. Add handler in `HermesCLI.process_command()` in `cli.py`:
-```python
-elif canonical == "mycommand":
-    self._handle_mycommand(cmd_original)
-```
-3. If the command is available in the gateway, add a handler in `gateway/run.py`:
-```python
-if canonical == "mycommand":
-    return await self._handle_mycommand(event)
-```
-4. For persistent settings, use `save_config_value()` in `cli.py`
+~/.hermes/                              ← HERMES_HOME (use get_hermes_home() in code)
+├── config.yaml                         ← Hermes configuration
+├── .env                                ← API keys
+├── skills/                             ← All Hermes skills (auto-loaded)
+│   └── ebook-factory/                  ← Factory-specific skills
+│       ├── skills/outliner/            ← Outliner agent code
+│       │   ├── orchestrator.py         ← Main outliner script [DONE]
+│       │   └── SKILL.md                ← How to use the outliner
+│       ├── skills/chapter-builder/     ← Chapter-Builder code [NEEDS BUILD]
+│       │   ├── chapter_builder.py
+│       │   └── SKILL.md
+│       ├── skills/packager/            ← Packager code [NEEDS BUILD]
+│       │   ├── packager.py
+│       │   └── SKILL.md
+│       ├── outliner/SKILL.md           ← Outliner skill definition
+│       ├── ebook-agent-drafter/SKILL.md
+│       ├── ebook-agent-validator/SKILL.md
+│       ├── ebook-agent-refiner/SKILL.md
+│       ├── ebook-agent-packager/SKILL.md
+│       └── FACTORY-PIPELINE-PLAN4.md   ← Architecture document
+│
+└── ebook-factory/                      ← Factory working data
+    ├── workbooks/                      ← One dir per book project
+    │   └── book-<topic-slug>/
+    │       ├── 01_outline.md           ← Outliner output
+    │       ├── w-drafts/               ← Chapter-Builder writes here
+    │       │   ├── chapter-01.md
+    │       │   └── ...
+    │       ├── w-polished/             ← Human-approved chapters
+    │       │   └── chapter-01.md
+    │       └── output/                 ← Packager output
+    │           ├── manuscript.epub
+    │           ├── manuscript.pdf
+    │           ├── cover.jpg
+    │           └── kdp-metadata.json
+    └── skills/                         ← Agent scripts (working copies)
+        ├── draft-chapter/orchestrator.py   ← OLD drafter (reference only)
+        └── refiner-chapter/refiner.py      ← OLD refiner (reference only)
 
-**CommandDef fields:**
-- `name` — canonical name without slash (e.g. `"background"`)
-- `description` — human-readable description
-- `category` — one of `"Session"`, `"Configuration"`, `"Tools & Skills"`, `"Info"`, `"Exit"`
-- `aliases` — tuple of alternative names (e.g. `("bg",)`)
-- `args_hint` — argument placeholder shown in help (e.g. `"<prompt>"`, `"[name]"`)
-- `cli_only` — only available in the interactive CLI
-- `gateway_only` — only available in messaging platforms
-- `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
+~/books/                                ← Book content and references
+├── factory/
+│   ├── config.yaml                     ← Universal factory config
+│   ├── style-guide.md                  ← Writing standards
+│   ├── LEARNING.md                     ← Historical performance data
+│   └── references/published-books/     ← 12 published books (voice reference)
+└── the-ai-revolution/                  ← AI Revolution book (in-progress, post-pipeline)
+    ├── w-drafts/                       ← Draft chapters
+    ├── w-polished/                     ← Polished chapters
+    └── w-chapters-recovered/           ← Recovered content
 
-**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
+~/hermes-agent/                         ← Hermes codebase (DO NOT MODIFY casually)
+└── AGENTS.md                           ← THIS FILE (canonical master reference)
+```
+
+### CRITICAL PATH RULES
+1. NEVER hardcode `~/.hermes` — always use `get_hermes_home()` from `hermes_constants`
+2. Always include `<!-- AUTO-GENERATED: {timestamp} -->` at top of output files
+3. Add `## Validation Report` section at end of output showing pass/fail status
+4. Pass `w-polished/chapter-01.md` as voice reference to ALL Chapter-Builder agents
+5. Each Chapter-Builder writes to a SEPARATE file — no shared state
 
 ---
 
-## Adding New Tools
+## 4. HOW TO RUN THE PIPELINE
 
-Requires changes in **3 files**:
-
-**1. Create `tools/your_tool.py`:**
-```python
-import json, os
-from tools.registry import registry
-
-def check_requirements() -> bool:
-    return bool(os.getenv("EXAMPLE_API_KEY"))
-
-def example_tool(param: str, task_id: str = None) -> str:
-    return json.dumps({"success": True, "data": "..."})
-
-registry.register(
-    name="example_tool",
-    toolset="example",
-    schema={"name": "example_tool", "description": "...", "parameters": {...}},
-    handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
-    check_fn=check_requirements,
-    requires_env=["EXAMPLE_API_KEY"],
-)
+### Phase 0: Generate Outline (WORKING)
+```bash
+cd ~/.hermes/skills/ebook-factory/skills/outliner/
+source ~/hermes-agent/venv/bin/activate
+python3 orchestrator.py --chapters 10
+# Output: ~/.hermes/ebook-factory/workbooks/book-<topic>/01_outline.md
 ```
 
-**2. Add import** in `model_tools.py` `_discover_tools()` list.
+### Phase 1: Generate Chapters (BUILD IN PROGRESS)
+```bash
+cd ~/.hermes/ebook-factory/skills/chapter-builder/
+source ~/hermes-agent/venv/bin/activate
 
-**3. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+# Single chapter:
+python3 chapter_builder.py --chapter 1
 
-The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
+# Parallel (3 at once):
+python3 chapter_builder.py --chapter 1 &
+python3 chapter_builder.py --chapter 2 &
+python3 chapter_builder.py --chapter 3 &
+wait
+# Output: ~/.hermes/ebook-factory/workbooks/book-<topic>/w-drafts/chapter-XX.md
+```
 
-**Path references in tool schemas**: If the schema description mentions file paths (e.g. default output directories), use `display_hermes_home()` to make them profile-aware. The schema is generated at import time, which is after `_apply_profile_override()` sets `HERMES_HOME`.
+### Phase 2: Human Review (MANUAL)
+```
+1. Read each chapter in w-drafts/
+2. Approve: move to w-polished/
+3. Reject: leave in w-drafts/ and re-run chapter_builder.py --chapter N --force
+```
 
-**State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
-
-**Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
+### Phase 3: Package (BUILD IN PROGRESS)
+```bash
+cd ~/.hermes/ebook-factory/skills/packager/
+source ~/hermes-agent/venv/bin/activate
+python3 packager.py --book-dir ~/.hermes/ebook-factory/workbooks/book-<topic>/
+# Output: ~/.hermes/ebook-factory/workbooks/book-<topic>/output/
+```
 
 ---
 
-## Adding Configuration
+## 5. CHAPTER-BUILDER AGENT SPEC (WHAT TO BUILD)
 
-### config.yaml options:
-1. Add to `DEFAULT_CONFIG` in `hermes_cli/config.py`
-2. Bump `_config_version` (currently 5) to trigger migration for existing users
+### Location
+`~/.hermes/ebook-factory/skills/chapter-builder/chapter_builder.py`
 
-### .env variables:
-1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
+### API Call Pattern (Ollama direct — NOT subprocess CLI)
 ```python
-"NEW_API_KEY": {
-    "description": "What it's for",
-    "prompt": "Display name",
-    "url": "https://...",
-    "password": True,
-    "category": "tool",  # provider, tool, messaging, setting
-},
+import requests
+
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODEL = "qwen3.5:35b-a3b-q4_k_m"
+
+response = requests.post(OLLAMA_URL, json={
+    "model": MODEL,
+    "messages": [{"role": "user", "content": prompt}],
+    "stream": False,
+    "options": {"temperature": 0.7, "num_predict": 5000}
+})
+content = response.json()["message"]["content"]
 ```
 
-### Config loaders (two separate systems):
+### Self-Validation Loop
+```
+Draft → validate (word count ±10%, keywords present, no placeholders, has conclusion)
+  → if issues: refine (LLM call with issues list)
+  → re-validate (max 3 iterations)
+  → write to w-drafts/chapter-XX.md
+```
 
-| Loader | Used by | Location |
-|--------|---------|----------|
-| `load_cli_config()` | CLI mode | `cli.py` |
-| `load_config()` | `hermes tools`, `hermes setup` | `hermes_cli/config.py` |
-| Direct YAML load | Gateway | `gateway/run.py` |
+### Output Format
+```markdown
+# Chapter N: Title
+<!-- AUTO-GENERATED: 2026-04-15T14:00:00 -->
+
+[2500-3000 words of content]
 
 ---
 
-## Skin/Theme System
-
-The skin engine (`hermes_cli/skin_engine.py`) provides data-driven CLI visual customization. Skins are **pure data** — no code changes needed to add a new skin.
-
-### Architecture
-
-```
-hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
-~/.hermes/skins/*.yaml       # User-installed custom skins (drop-in)
+## Validation Report
+- Word count: 2847 ✓ (target: 2800)
+- Keywords: all present ✓
+- Conclusion: present ✓
+- Refinement iterations: 1
+- Status: PASS
 ```
 
-- `init_skin_from_config()` — called at CLI startup, reads `display.skin` from config
-- `get_active_skin()` — returns cached `SkinConfig` for the current skin
-- `set_active_skin(name)` — switches skin at runtime (used by `/skin` command)
-- `load_skin(name)` — loads from user skins first, then built-ins, then falls back to default
-- Missing skin values inherit from the `default` skin automatically
-
-### What skins customize
-
-| Element | Skin Key | Used By |
-|---------|----------|---------|
-| Banner panel border | `colors.banner_border` | `banner.py` |
-| Banner panel title | `colors.banner_title` | `banner.py` |
-| Banner section headers | `colors.banner_accent` | `banner.py` |
-| Banner dim text | `colors.banner_dim` | `banner.py` |
-| Banner body text | `colors.banner_text` | `banner.py` |
-| Response box border | `colors.response_border` | `cli.py` |
-| Spinner faces (waiting) | `spinner.waiting_faces` | `display.py` |
-| Spinner faces (thinking) | `spinner.thinking_faces` | `display.py` |
-| Spinner verbs | `spinner.thinking_verbs` | `display.py` |
-| Spinner wings (optional) | `spinner.wings` | `display.py` |
-| Tool output prefix | `tool_prefix` | `display.py` |
-| Per-tool emojis | `tool_emojis` | `display.py` → `get_tool_emoji()` |
-| Agent name | `branding.agent_name` | `banner.py`, `cli.py` |
-| Welcome message | `branding.welcome` | `cli.py` |
-| Response box label | `branding.response_label` | `cli.py` |
-| Prompt symbol | `branding.prompt_symbol` | `cli.py` |
-
-### Built-in skins
-
-- `default` — Classic Hermes gold/kawaii (the current look)
-- `ares` — Crimson/bronze war-god theme with custom spinner wings
-- `mono` — Clean grayscale monochrome
-- `slate` — Cool blue developer-focused theme
-
-### Adding a built-in skin
-
-Add to `_BUILTIN_SKINS` dict in `hermes_cli/skin_engine.py`:
-
-```python
-"mytheme": {
-    "name": "mytheme",
-    "description": "Short description",
-    "colors": { ... },
-    "spinner": { ... },
-    "branding": { ... },
-    "tool_prefix": "┊",
-},
+### CLI Interface
+```bash
+python3 chapter_builder.py --chapter 3
+python3 chapter_builder.py --chapter 3 --book-dir /path/to/workbook/
+python3 chapter_builder.py --chapter 3 --force   # Overwrite existing
+python3 chapter_builder.py --chapter 3 --model qwen3.5:27b-16k  # Override to fallback
 ```
 
-### User skins (YAML)
+---
 
-Users create `~/.hermes/skins/<name>.yaml`:
+## 6. PACKAGER AGENT SPEC (WHAT TO BUILD)
+
+### Location
+`~/.hermes/ebook-factory/skills/packager/packager.py`
+
+### Tools Required
+- `ebook-convert` (Calibre CLI) — for EPUB/MOBI conversion
+- `weasyprint` — for PDF generation from HTML
+- Python `ebooklib` — for EPUB construction
+
+### Inputs
+```
+w-polished/chapter-*.md    ← All approved chapters
+01_outline.md              ← For TOC and metadata
+books/factory/style-guide.md ← For consistent formatting
+```
+
+### Outputs
+```
+output/
+├── manuscript.epub
+├── manuscript.pdf
+├── cover.jpg              (via ComfyUI or placeholder)
+└── kdp-metadata.json      (title, author, keywords, BISAC category)
+```
+
+### Tasks
+1. Assemble chapters in order
+2. Generate front matter (title page, copyright, TOC)
+3. Generate back matter (author bio, CTA to other books)
+4. Convert to EPUB via ebooklib
+5. Convert to PDF via weasyprint
+6. Write kdp-metadata.json
+7. Validate output files (epubcheck if available)
+
+---
+
+## 7. PERFORMANCE TARGETS
+
+```
+Metric                  | Target        | How to Verify
+────────────────────────|───────────────|──────────────────────────────
+Outliner gen time       | < 3 min       | Log start/end timestamps
+Chapters total          | 10-12         | Count H2 headers in 01_outline.md
+Chapter-Builder time    | ~6 min each   | Parallel: 10 chapters ~30 min
+Validation pass rate    | ≥90% first try| Check Validation Reports
+Human edit rate         | < 20%         | Count w-drafts rejections
+Word count accuracy     | ±10% of target| Validation Report
+```
+
+---
+
+## 8. HERMES CONFIGURATION (CURRENT)
 
 ```yaml
-name: cyberpunk
-description: Neon-soaked terminal theme
+# ~/.hermes/config.yaml (key settings)
+model:
+  default: claude-sonnet-4-6
+  provider: anthropic           # Change to local-localhost:11434 for local mode
 
-colors:
-  banner_border: "#FF00FF"
-  banner_title: "#00FFFF"
-  banner_accent: "#FF1493"
+providers:
+  local-localhost:11434:
+    api: http://localhost:11434/v1
+    default_model: qwen3.5:35b-a3b-q4_k_m
 
-spinner:
-  thinking_verbs: ["jacking in", "decrypting", "uploading"]
-  wings:
-    - ["⟨⚡", "⚡⟩"]
+agent:
+  max_iterations: 60            # 60 for pipeline work (was 20, too low)
+  timeout_seconds: 600
 
-branding:
-  agent_name: "Cyber Agent"
-  response_label: " ⚡ Cyber "
-
-tool_prefix: "▏"
+toolsets:                       # Enabled toolsets
+  - hermes-cli
+  - topic-research
+  - file
+  - terminal
+  - web
 ```
 
-Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
-
----
-
-## Important Policies
-### Prompt Caching Must Not Break
-
-Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**
-- Alter past context mid-conversation
-- Change toolsets mid-conversation
-- Reload memories or rebuild system prompts mid-conversation
-
-Cache-breaking forces dramatically higher costs. The ONLY time we alter context is during context compression.
-
-### Working Directory Behavior
-- **CLI**: Uses current directory (`.` → `os.getcwd()`)
-- **Messaging**: Uses `MESSAGING_CWD` env var (default: home directory)
-
-### Background Process Notifications (Gateway)
-
-When `terminal(background=true, notify_on_complete=true)` is used, the gateway runs a watcher that
-detects process completion and triggers a new agent turn. Control verbosity of background process
-messages with `display.background_process_notifications`
-in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
-
-- `all` — running-output updates + final message (default)
-- `result` — only the final completion message
-- `error` — only the final message when exit code != 0
-- `off` — no watcher messages at all
-
----
-
-## Profiles: Multi-Instance Support
-
-Hermes supports **profiles** — multiple fully isolated instances, each with its own
-`HERMES_HOME` directory (config, API keys, memory, sessions, skills, gateway, etc.).
-
-The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
-`HERMES_HOME` before any module imports. All 119+ references to `get_hermes_home()`
-automatically scope to the active profile.
-
-### Rules for profile-safe code
-
-1. **Use `get_hermes_home()` for all HERMES_HOME paths.** Import from `hermes_constants`.
-   NEVER hardcode `~/.hermes` or `Path.home() / ".hermes"` in code that reads/writes state.
-   ```python
-   # GOOD
-   from hermes_constants import get_hermes_home
-   config_path = get_hermes_home() / "config.yaml"
-
-   # BAD — breaks profiles
-   config_path = Path.home() / ".hermes" / "config.yaml"
-   ```
-
-2. **Use `display_hermes_home()` for user-facing messages.** Import from `hermes_constants`.
-   This returns `~/.hermes` for default or `~/.hermes/profiles/<name>` for profiles.
-   ```python
-   # GOOD
-   from hermes_constants import display_hermes_home
-   print(f"Config saved to {display_hermes_home()}/config.yaml")
-
-   # BAD — shows wrong path for profiles
-   print("Config saved to ~/.hermes/config.yaml")
-   ```
-
-3. **Module-level constants are fine** — they cache `get_hermes_home()` at import time,
-   which is AFTER `_apply_profile_override()` sets the env var. Just use `get_hermes_home()`,
-   not `Path.home() / ".hermes"`.
-
-4. **Tests that mock `Path.home()` must also set `HERMES_HOME`** — since code now uses
-   `get_hermes_home()` (reads env var), not `Path.home() / ".hermes"`:
-   ```python
-   with patch.object(Path, "home", return_value=tmp_path), \
-        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
-       ...
-   ```
-
-5. **Gateway platform adapters should use token locks** — if the adapter connects with
-   a unique credential (bot token, API key), call `acquire_scoped_lock()` from
-   `gateway.status` in the `connect()`/`start()` method and `release_scoped_lock()` in
-   `disconnect()`/`stop()`. This prevents two profiles from using the same credential.
-   See `gateway/platforms/telegram.py` for the canonical pattern.
-
-6. **Profile operations are HOME-anchored, not HERMES_HOME-anchored** — `_get_profiles_root()`
-   returns `Path.home() / ".hermes" / "profiles"`, NOT `get_hermes_home() / "profiles"`.
-   This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
-   of which one is active.
-
-## Known Pitfalls
-
-### DO NOT hardcode `~/.hermes` paths
-Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_hermes_home()`
-for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
-has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
-
-### DO NOT use `simple_term_menu` for interactive menus
-Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) instead. See `hermes_cli/tools_config.py` for the pattern.
-
-### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
-Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
-
-### `_last_resolved_tool_names` is a process-global in `model_tools.py`
-`_run_single_child()` in `delegate_tool.py` saves and restores this global around subagent execution. If you add new code that reads this global, be aware it may be temporarily stale during child agent runs.
-
-### DO NOT hardcode cross-tool references in schema descriptions
-Tool schema descriptions must not mention tools from other toolsets by name (e.g., `browser_navigate` saying "prefer web_search"). Those tools may be unavailable (missing API keys, disabled toolset), causing the model to hallucinate calls to non-existent tools. If a cross-reference is needed, add it dynamically in `get_tool_definitions()` in `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks for the pattern.
-
-### Tests must not write to `~/.hermes/`
-The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
-
-**Profile tests**: When testing profile features, also mock `Path.home()` so that
-`_get_profiles_root()` and `_get_default_hermes_home()` resolve within the temp dir.
-Use the pattern from `tests/hermes_cli/test_profiles.py`:
-```python
-@pytest.fixture
-def profile_env(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    return home
-```
-
----
-
-## Testing
-
+### To Switch to Local Model Mode
 ```bash
-source venv/bin/activate
-python -m pytest tests/ -q          # Full suite (~3000 tests, ~3 min)
-python -m pytest tests/test_model_tools.py -q   # Toolset resolution
-python -m pytest tests/test_cli_init.py -q       # CLI config loading
-python -m pytest tests/gateway/ -q               # Gateway tests
-python -m pytest tests/tools/ -q                 # Tool-level tests
+hermes /model local-localhost:11434/qwen3.5:35b-a3b-q4_k_m
+# OR edit config.yaml: model.provider: local-localhost:11434
 ```
 
-Always run the full suite before pushing changes.
+---
+
+## 9. WHAT STILL NEEDS TO BE BUILT
+
+### Priority Order
+```
+1. Chapter-Builder agent (chapter_builder.py)       ← NEXT
+2. Packager agent (packager.py)                     ← AFTER
+3. End-to-end smoke test (outline → chapters → package)
+4. Update all SKILL.md files for local model operation
+5. Switch default model to qwen3.5:35b-a3b-q4_k_m
+```
+
+### What Is Done
+```
+✓ Outliner agent (orchestrator.py) — generates 01_outline.md
+✓ Refiner agent (refiner.py) — iterative refinement loop
+✓ Old drafter (orchestrator.py in draft-chapter/) — superseded by new Chapter-Builder
+✓ 12 published books — voice reference material exists
+✓ Hermes v0.9.0 installed and working
+✓ Ollama running with qwen3.5:35b-a3b-q4_k_m (MoE, 23GB, 262k context)
+✓ LEARNING.md with historical performance data
+```
+
+---
+
+## 10. COMMON PROBLEMS & SOLUTIONS
+
+### Hermes doesn't know what it's working on (session amnesia)
+- Root cause: Local model has no cross-session memory
+- Solution: Always start sessions with: `cat ~/hermes-agent/AGENTS.md`
+- Then run: `cat ~/.hermes/ebook-factory/workbooks/book-<topic>/01_outline.md`
+
+### Chapter-Builder produces < 2000 words
+- Increase `num_predict` to 6000 in API call options
+- Add explicit word count to prompt: "Write exactly 2800 words. Do not stop early."
+- Use 16k context model, not 8k
+
+### Outliner finds no topic plans
+- Run topic_planner first: `~/.hermes/hermes_skills/planner/`
+- OR manually create a topic_plan file in `~/.hermes/output/planner/`
+
+### Packager can't find ebook-convert
+- Install Calibre: `sudo apt install calibre`
+- Verify: `which ebook-convert`
+
+### Ollama times out during generation
+- Increase timeout to 1800 seconds (30 min)
+- Use 8k context model for speed
+- Check GPU memory: `nvidia-smi`
+
+---
+
+## 11. DEVELOPMENT ENVIRONMENT (hermes-agent codebase)
+
+```
+Always activate venv before running Python:
+source ~/hermes-agent/venv/bin/activate
+
+Key files:
+run_agent.py          ← AIAgent class, core loop
+model_tools.py        ← Tool orchestration
+toolsets.py           ← Toolset definitions
+cli.py                ← HermesCLI class
+hermes_cli/config.py  ← DEFAULT_CONFIG, config migration
+tools/registry.py     ← Central tool registry
+```
+
+### Adding New Tools (3-step)
+1. Create `tools/your_tool.py` with `registry.register()`
+2. Add import in `model_tools.py` `_discover_tools()` list
+3. Add to `toolsets.py`
+
+### Testing
+```bash
+source ~/hermes-agent/venv/bin/activate
+python -m pytest tests/ -q   # ~3000 tests, ~3 min
+```
+
+---
+
+## 12. KNOWN PITFALLS
+
+- DO NOT hardcode `~/.hermes` paths — use `get_hermes_home()` (breaks profiles)
+- DO NOT use `simple_term_menu` (tmux/iTerm2 ghosting)
+- DO NOT use subprocess `hermes` CLI for chapter generation — use direct Ollama API
+- DO NOT run `args = parser.parse_args()` twice in the same script (existing bug in draft-chapter/orchestrator.py line 516/523)
+- The `draft-chapter/orchestrator.py` has a double `parse_args()` bug — do NOT copy this pattern into new agents
+- model.api_key field in config.yaml should NOT be set to "ollama" — leave it empty or use proper key
+
+---
+
+## 13. SESSION STARTUP CHECKLIST (For Local Model Sessions)
+
+When starting a new Hermes session with the local model, do this:
+
+```
+1. Read this file: cat ~/hermes-agent/AGENTS.md
+2. Check current workbook: ls ~/.hermes/ebook-factory/workbooks/
+3. Check what's already drafted: ls ~/.hermes/ebook-factory/workbooks/book-<topic>/w-drafts/
+4. Check what's approved: ls ~/.hermes/ebook-factory/workbooks/book-<topic>/w-polished/
+5. If no workbook: run Outliner first
+6. If workbook exists: run Chapter-Builder for next chapter
+7. If all chapters approved: run Packager
+```
+
+---
+
+*This file is the single source of truth for the bookforge ebook factory system.*
+*Keep it updated as agents are built and the pipeline evolves.*
+*Every session — human or AI — should start by reading this file.*

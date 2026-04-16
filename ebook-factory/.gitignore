@@ -1,0 +1,16 @@
+# Ebook Factory — What NOT to commit
+
+# Workbooks with actual book content (drafts, chapters, covers)
+# These stay local — publish to KDP, not GitHub
+workbooks/
+
+# Self-improvement runtime data (regenerated weekly)
+skills/self-improvement/patterns.json
+skills/self-improvement/audit_log.json
+skills/self-improvement/prompt_overrides.json
+skills/self-improvement/improvement_report.md
+
+# Pyc caches
+__pycache__/
+*.pyc
+*.pyo
