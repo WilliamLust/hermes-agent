@@ -35,9 +35,7 @@ HERMES_HOME   = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 LEARNING_FILE = Path.home() / "books" / "factory" / "LEARNING.md"
 OUTPUT_DIR    = HERMES_HOME / "output" / "planner"
 
-# Researcher lives here — import directly so we get structured data, not text
 RESEARCHER_DIR = HERMES_HOME / "ebook-factory" / "skills" / "researcher"
-sys.path.insert(0, str(RESEARCHER_DIR))
 
 OLLAMA_URL    = "http://localhost:11434/api/chat"
 PLANNER_MODEL = "qwen3.5:27b-16k"   # Creative/generative — best for idea gen
@@ -167,6 +165,19 @@ def research_candidates(candidates: list[dict], skip_bsr: bool = False) -> list[
     Attaches market data to each candidate dict.
     Returns enriched candidates list.
     """
+    # Insert researcher directory into path at call time, not module load time.
+    # This avoids module-level side effects and fails loudly if the path is wrong.
+    if not RESEARCHER_DIR.exists():
+        log(f"WARNING: Researcher not found at {RESEARCHER_DIR}")
+        log("Skipping live market research — results will use planner scores only")
+        for c in candidates:
+            c["market"] = None
+        return candidates
+
+    researcher_str = str(RESEARCHER_DIR)
+    if researcher_str not in sys.path:
+        sys.path.insert(0, researcher_str)
+
     try:
         from researcher import research_niche
         log("Researcher module loaded successfully")
