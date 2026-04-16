@@ -357,40 +357,51 @@ def fill_book_details(page, meta: dict, dry_run: bool = False):
         time.sleep(3)
         log(f"  URL after retry: {page.url[:80]}")
 
-    # Title
-    safe_fill(page, "input#bookTitle, input[name='bookTitle'], input[data-qa='book-title']",
-              meta.get("title", ""), "Title")
+    # Title — real KDP selector: id="data-title"
+    safe_fill(page, "#data-title", meta.get("title", ""), "Title")
 
-    # Subtitle (optional)
+    # Subtitle
     subtitle = meta.get("subtitle", "")
     if subtitle:
-        safe_fill(page, "input#bookSubTitle, input[name='bookSubTitle']", subtitle, "Subtitle")
+        safe_fill(page, "#data-subtitle", subtitle, "Subtitle")
 
-    # Author (Primary Author first name / last name split)
+    # Author — first name / last name split
     author = meta.get("author", "")
     if author and " " in author:
         parts = author.rsplit(" ", 1)
-        safe_fill(page, "input#authorFirstName, input[name='authorFirstName']", parts[0], "Author First")
-        safe_fill(page, "input#authorLastName, input[name='authorLastName']", parts[1], "Author Last")
+        safe_fill(page, "#data-primary-author-first-name", parts[0], "Author First")
+        safe_fill(page, "#data-primary-author-last-name", parts[1], "Author Last")
     elif author:
-        safe_fill(page, "input#authorLastName, input[name='authorLastName']", author, "Author")
+        safe_fill(page, "#data-primary-author-last-name", author, "Author")
 
-    # Publisher (optional)
+    # Publisher
     publisher = meta.get("publisher", "")
     if publisher:
-        safe_fill(page, "input#publisherName, input[name='publisherName']", publisher, "Publisher")
+        safe_fill(page, "#data-publisher-label", publisher, "Publisher")
 
-    # Description — KDP uses a rich text editor (contenteditable div) or textarea
+    # Description — KDP uses CKEditor rich text editor
+    # Use iframe approach: CKEditor puts editable content in an iframe
     description = meta.get("description", "")
     if description:
         try:
-            # Try contenteditable first (KDP's default)
-            desc_editor = page.query_selector("div[contenteditable='true'], div.fr-element, textarea#bookDescription")
-            if desc_editor:
-                desc_editor.click()
-                page.keyboard.press("Control+a")
-                page.keyboard.type(description[:4000])
-                log(f"  Filled Description ({len(description)} chars)")
+            # CKEditor iframe approach
+            cke_iframe = page.query_selector("iframe[id^='cke_'], iframe.cke_wysiwyg_frame")
+            if cke_iframe:
+                # Switch to iframe context
+                frame = cke_iframe.content_frame()
+                body = frame.query_selector("body")
+                if body:
+                    body.click()
+                    page.keyboard.press("Control+a")
+                    # Type as plain text (CKEditor accepts keyboard input)
+                    frame.evaluate(f"document.body.innerHTML = {repr(description[:4000])}")
+                    log(f"  Filled Description via CKEditor iframe ({len(description)} chars)")
+            else:
+                # Fallback: set the hidden input value directly via JS
+                page.evaluate(
+                    f"var inp = document.querySelector(\"input[name='data[description]']\"); if(inp) inp.value = {repr(description[:4000])};"
+                )
+                log(f"  Description set via JS hidden input ({len(description)} chars)")
         except Exception as e:
             log(f"  Description fill failed: {e}")
 
@@ -417,75 +428,37 @@ def fill_book_details(page, meta: dict, dry_run: bool = False):
                 except Exception:
                     pass
 
-    # Categories — KDP requires clicking through a category tree
-    bisac = meta.get("bisac_category", "")
-    if bisac in BISAC_TO_CATEGORY:
-        cat_main, cat_sub = BISAC_TO_CATEGORY[bisac]
-        log(f"  Setting category: {cat_main} > {cat_sub}")
-        try:
-            # Click "Add categories" button
-            for cat_btn_sel in [
-                "button:has-text('Add categories')",
-                "button:has-text('Add')",
-                "a:has-text('Add categories')",
-                "#add-categories",
-            ]:
-                btn = page.query_selector(cat_btn_sel)
-                if btn:
-                    btn.click()
-                    time.sleep(1)
-                    break
-
-            # Search for category if search box exists
-            search_box = page.query_selector("input[placeholder*='category'], input[placeholder*='search']")
-            if search_box:
-                search_box.type(cat_main[:20], delay=50)
-                time.sleep(1)
-
-            # Click matching category
-            cat_el = page.query_selector(f"text={cat_main}")
-            if cat_el:
-                cat_el.click()
-                time.sleep(0.5)
-            cat_sub_el = page.query_selector(f"text={cat_sub}")
-            if cat_sub_el:
-                cat_sub_el.click()
-                time.sleep(0.5)
-
-            # Confirm selection
-            for confirm_sel in ["button:has-text('Select')", "button:has-text('Done')", "button:has-text('Save')"]:
-                confirm = page.query_selector(confirm_sel)
-                if confirm:
-                    confirm.click()
-                    break
-        except Exception as e:
-            log(f"  Category selection issue: {e} — skipping, set manually")
-
-    # Adult content toggle (default: No)
-    if not meta.get("adult_content", False):
-        try:
-            no_radio = page.query_selector("input[value='false'][name='isAdultContent'], label:has-text('No')")
-            if no_radio:
-                no_radio.click()
-        except Exception:
-            pass
+    # Adult content — No (must be set before categories)
+    try:
+        radios = page.query_selector_all("input[name='data[is_adult_content]-radio']")
+        for r in radios:
+            if r.get_attribute('value') == 'false':
+                r.click()
+                log("  Adult content: No ✓")
+                break
+        time.sleep(0.5)
+    except Exception as e:
+        log(f"  Adult content: {e}")
 
     # KDP Select enrollment
     if meta.get("enrollment", {}).get("kdp_select", True):
         try:
-            kdp_select = page.query_selector("input[name='kdpEnrollment'], input#kdpEnroll")
+            kdp_select = page.query_selector("input[name='data[is_select]'], input[id='data-is-select']")
             if kdp_select and not kdp_select.is_checked():
                 kdp_select.click()
                 log("  KDP Select: enabled")
         except Exception:
             pass
 
-    # Save & Continue to Step 2
+    # Categories — NOTE: KDP category modal is complex React UI.
+    # We open it but skip automated selection. User sets categories in KDP dashboard.
+    log("  ⚠️  Categories: set manually in KDP dashboard after draft is saved")
+    # Save & Continue to Step 2 — real KDP button id: save-and-continue-announce
     log("  Clicking Save and Continue...")
     for save_sel in [
+        "#save-and-continue-announce",
         "button:has-text('Save and Continue')",
         "input[value='Save and Continue']",
-        "button[data-qa='save-and-continue']",
     ]:
         btn = page.query_selector(save_sel)
         if btn:
@@ -556,16 +529,25 @@ def upload_content(page, book_dir: Path, dry_run: bool = False):
         except Exception as e:
             log(f"  Cover upload error: {e}")
 
-    # Save & Continue to Step 3
+    # Save & Continue to Step 3 — close any modal first, then click
     log("  Clicking Save and Continue...")
+    try:
+        # Dismiss any open modal/popover that might block the click
+        page.evaluate("document.querySelectorAll('.a-modal-scroller, [data-action=\"a-popover-floating-close\"]').forEach(el => el.style.display='none')")
+    except Exception:
+        pass
+    time.sleep(1)
     for save_sel in [
+        "#save-and-continue-announce",
         "button:has-text('Save and Continue')",
-        "button:has-text('Save and Publish')",
-        "button[data-qa='save-and-continue']",
     ]:
         btn = page.query_selector(save_sel)
         if btn:
-            btn.click()
+            try:
+                btn.click()
+            except Exception:
+                # Fallback: JavaScript click bypasses overlay
+                page.evaluate(f"document.querySelector('{save_sel}').click()")
             time.sleep(3)
             log(f"  → Step 2 saved. URL: {page.url[:80]}")
             break
@@ -636,12 +618,12 @@ def fill_pricing(page, meta: dict, dry_run: bool = False):
     except Exception as e:
         log(f"  Price: {e}")
 
-    # Save as DRAFT (not publish) — explicitly look for "Save as Draft"
+    # Save as DRAFT — real KDP id: save-announce
     log("  Saving as draft (NOT publishing)...")
     saved = False
     for save_sel in [
+        "#save-announce",
         "button:has-text('Save as Draft')",
-        "button[data-qa='save-as-draft']",
         "input[value='Save as Draft']",
     ]:
         btn = page.query_selector(save_sel)
@@ -653,9 +635,8 @@ def fill_pricing(page, meta: dict, dry_run: bool = False):
             break
 
     if not saved:
-        # Fallback: save and continue but do NOT click any publish button
         log("  'Save as Draft' not found — saving via Save and Continue")
-        for save_sel in ["button:has-text('Save and Continue')", "button[data-qa='save-and-continue']"]:
+        for save_sel in ["#save-and-continue-announce", "button:has-text('Save and Continue')"]:
             btn = page.query_selector(save_sel)
             if btn:
                 btn.click()
