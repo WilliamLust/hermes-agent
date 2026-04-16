@@ -103,12 +103,15 @@ FONT_LIGHT = [
 
 NICHE_PALETTES = {
     "productivity": {
-        "keywords": ["productivity", "time management", "habits", "focus", "goals", "efficiency", "getting things done"],
+        "keywords": ["productivity", "time management", "habits", "focus", "goals", "efficiency", "getting things done", "ADHD"],
         "bg_prompt": (
-            "Deep warm orange gradient fading to near-black at the bottom. "
-            "Subtle geometric hexagon grid texture in the lower portion. "
-            "Atmospheric warm glow in the upper section. "
-            "Bold, energetic, modern professional aesthetic."
+            "Translucent human head shown front-facing, cool steel blue-gray tones. "
+            "Brain visible inside skull split into two halves: "
+            "left side chaotic tangled neural threads in dark muted colors, "
+            "right side glowing organized orange geometric neural network with bright nodes. "
+            "Orange energy sparks radiating outward. Deep black background. "
+            "Cinematic lighting, photorealistic CGI render, dramatic contrast. "
+            "No text. Professional nonfiction book cover background."
         ),
         "title_color":    "#FFFFFF",
         "subtitle_color": "#FFD580",
@@ -119,10 +122,11 @@ NICHE_PALETTES = {
     "health": {
         "keywords": ["health", "wellness", "gut", "sleep", "diet", "fitness", "nutrition", "weight", "fatigue"],
         "bg_prompt": (
-            "Clean teal to deep forest green gradient. "
-            "Soft abstract botanical shapes, barely visible. "
-            "Light rays suggesting warmth and vitality. "
-            "Calm, natural, healing aesthetic."
+            "Serene human body outline in translucent teal, glowing from within with warm light. "
+            "Abstract organic flowing shapes representing biological systems — circular cells, "
+            "gentle waves, botanical micro-details. Deep forest green to teal gradient background. "
+            "Soft volumetric lighting, calm and healing atmosphere. "
+            "No text. Professional nonfiction health book cover background."
         ),
         "title_color":    "#FFFFFF",
         "subtitle_color": "#B2EBE0",
@@ -133,10 +137,11 @@ NICHE_PALETTES = {
     "tech-security": {
         "keywords": ["security", "privacy", "network", "digital", "cyber", "hacking", "tech", "computer", "ai", "data"],
         "bg_prompt": (
-            "Dark midnight blue to deep charcoal gradient. "
-            "Faint circuit board or data grid pattern. "
-            "Subtle digital light streaks. "
-            "Sleek, sophisticated, high-tech aesthetic."
+            "Dark control room perspective: glowing circuit board patterns recede into deep space. "
+            "Bright green and cyan data streams flow along geometric pathways. "
+            "Central lock symbol radiates light outward against midnight blue black background. "
+            "High contrast, sleek, cinematic tech aesthetic. "
+            "No text. Professional cybersecurity nonfiction book cover background."
         ),
         "title_color":    "#00FF88",
         "subtitle_color": "#FFFFFF",
@@ -147,10 +152,11 @@ NICHE_PALETTES = {
     "parenting": {
         "keywords": ["parenting", "children", "family", "kids", "baby", "toddler", "parent", "child"],
         "bg_prompt": (
-            "Warm golden yellow fading softly to light coral. "
-            "Gentle soft bokeh circles of light. "
-            "Warm, inviting, optimistic atmosphere. "
-            "Nurturing, joyful, approachable aesthetic."
+            "Warm sunlit living room scene, soft bokeh background. "
+            "Gentle golden light streaming through a window onto a cozy reading corner. "
+            "Abstract warm shapes suggesting connection and growth — overlapping circles in "
+            "amber, peach, and coral. Inviting, nurturing, joyful atmosphere. "
+            "No text, no people visible. Professional parenting book cover background."
         ),
         "title_color":    "#3D2B1F",
         "subtitle_color": "#5D4037",
@@ -161,10 +167,11 @@ NICHE_PALETTES = {
     "business": {
         "keywords": ["business", "money", "finance", "entrepreneur", "startup", "leadership", "management", "income"],
         "bg_prompt": (
-            "Deep navy blue to dark slate gradient. "
-            "Abstract geometric shapes suggesting structure and precision. "
-            "Subtle diagonal lines or grid pattern. "
-            "Authoritative, professional, sophisticated aesthetic."
+            "Aerial perspective of a modern city at night, lights forming geometric grid patterns. "
+            "Deep navy to midnight blue gradient. Golden light traces of movement suggesting "
+            "commerce and flow. Sharp architectural lines, perspective vanishing point at center. "
+            "Authoritative, sophisticated, high-stakes atmosphere. "
+            "No text. Professional business nonfiction book cover background."
         ),
         "title_color":    "#FFFFFF",
         "subtitle_color": "#CFD8DC",
@@ -175,10 +182,12 @@ NICHE_PALETTES = {
     "self-help": {
         "keywords": ["procrastination", "mindset", "motivation", "anxiety", "confidence", "success", "happiness", "stress"],
         "bg_prompt": (
-            "Rich deep purple fading to dark indigo. "
-            "Soft abstract watercolor-like gradient wash. "
-            "Subtle light bloom suggesting hope and potential. "
-            "Inspiring, personal, transformative aesthetic."
+            "Single beam of brilliant white-gold light breaking through dense storm clouds "
+            "from above, illuminating a dramatic landscape below. "
+            "Dark purple-blue storm above, warm golden light at the focal point. "
+            "Rays radiating downward, volumetric god-rays effect. "
+            "Inspiring, transformative, powerful visual metaphor for breakthrough. "
+            "No text. Professional self-help nonfiction book cover background."
         ),
         "title_color":    "#FFFFFF",
         "subtitle_color": "#E1BEE7",
