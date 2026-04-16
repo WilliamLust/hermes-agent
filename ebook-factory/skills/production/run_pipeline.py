@@ -98,8 +98,10 @@ def parse_queue(path: Path) -> list[dict]:
     content = path.read_text(encoding="utf-8")
     topics = []
 
-    # Split on --- separators
-    blocks = re.split(r"^---\s*$", content, flags=re.MULTILINE)
+    # Split on --- separators; also handle entries at the top of the file
+    # before the first separator by prepending a synthetic separator
+    normalized = re.sub(r"^(#[^\n]*\n)+", "", content)  # strip leading comment block
+    blocks = re.split(r"^---\s*$", normalized, flags=re.MULTILINE)
     for block in blocks:
         block = block.strip()
         if not block or block.startswith("#"):
@@ -286,7 +288,7 @@ def main():
     parser.add_argument("--dry-run",  action="store_true", help="Show steps without running")
     parser.add_argument("--topic",    type=str, default="",  help="Override: specify topic directly")
     parser.add_argument("--niche",    type=str, default="self-help", help="Niche (with --topic)")
-    parser.add_argument("--chapters", type=int, default=10,  help="Chapter count override")
+    parser.add_argument("--chapters", type=int, default=12,  help="Chapter count override")
     parser.add_argument("--list",     action="store_true", help="List approved queue and exit")
     args = parser.parse_args()
 
