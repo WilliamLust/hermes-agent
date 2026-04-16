@@ -10,19 +10,82 @@ version: 1.0
 
 Lessons learned during the pipeline build. Check these before debugging.
 
+## EPUB Validation — eBook-Standardization-Toolkit (REQUIRED)
+
+Calibre's HTML→EPUB conversion creates invalid XHTML when it splits files mid-list.
+`<p>` and `<h2>` appear directly inside `<ol>` tags without `<li>` wrappers.
+KDP rejects these EPUBs with "couldn't convert your file" error.
+
+**Fix: Always run eBook-Standardization-Toolkit after Packager.**
+
+```bash
+cd /home/bookforge/eBook-Standardization-Toolkit
+source venv/bin/activate
+
+INPUT=~/.hermes/ebook-factory/workbooks/book-SLUG/output/book-SLUG.epub
+OUTPUT=~/.hermes/ebook-factory/workbooks/book-SLUG/output/book-SLUG-standardized.epub
+
+python main.py "$INPUT" -o "$OUTPUT" --ai claude
+
+# If residual <section> tag errors remain (EPUB2 doesn't support <section>):
+# Replace <section> with <div> in the offending file using the zipfile approach
+
+# Copy standardized epub over original when clean:
+# epubcheck OUTPUT → 0 errors → cp OUTPUT INPUT
+```
+
+Tool location: `/home/bookforge/eBook-Standardization-Toolkit/`
+Uses Anthropic API. Each run costs ~$0.10-0.30 in API calls (43 fixes × small prompts).
+
+**Add to Packager pipeline:** After Calibre EPUB generation, before final output.
+
+---
+
 ## Chapter-Builder Word Count Calibration
 
-**Symptom:** 35B-A3B-Q4_K_M consistently produces 2,400-2,600 words despite 2,800 target.
+**Symptom:** `qwen3.5:35b-a3b-q4_k_m` consistently produces 2,400-2,600 words despite 2,800 target.
 
-**Cause:** Qwen3 reasoning model burns context tokens on thinking during refinement calls, leaving fewer tokens for actual output. Refinement prompts that request "rewrite the whole chapter" trigger extended thinking chains.
+**Cause:** Qwen3 is a reasoning model. It burns context tokens on `<thinking>` chains before generating output. On refinement calls, this often exhausts `num_predict=6000` entirely on thinking, returning empty content.
 
-**Fixes applied (all in chapter_builder.py):**
-- `/no_think` prefix on refinement prompts suppresses reasoning mode
-- Word-count-only refinements use targeted expansion (not full rewrite)
-- `num_predict=8000` on refinement calls (vs 6000 for drafts)
-- Graceful empty-response handling — keeps prior content if model returns nothing
+**Fixes applied (all in `chapter_builder.py`):**
 
-**Recommended:** Set outline word count targets to 3000-3200 so final polished chapters reliably land in 2600-2900 range after refinement overhead.
+1. `/no_think` prefix on refinement prompts — suppresses extended reasoning:
+```python
+return f"""/no_think
+The chapter below is {current_wc} words but needs {chapter['word_count']} words...
+```
+
+2. Separate `num_predict` for draft vs refinement:
+```python
+def call_ollama(prompt, model, system=SYSTEM_PROMPT, num_predict=6000):
+# Draft calls: num_predict=6000
+# Refinement calls: num_predict=8000  ← more headroom for thinking overhead
+```
+
+3. Graceful empty-response handling — keep prior content rather than crash:
+```python
+refined = call_ollama(refine_prompt, model, num_predict=8000)
+if refined:
+    content = refined
+else:
+    log("Refinement returned empty — keeping prior content")
+```
+
+4. Word-count-only refinements use targeted expansion, not full rewrite:
+```python
+# "Add 300 words by expanding examples" triggers less thinking than "rewrite chapter"
+return f"""/no_think
+The chapter below is {current_wc} words. Add approximately {needed} words by expanding
+the concrete examples with more specific detail. Return the complete improved chapter."""
+```
+
+**Recommended:** Set outline word count targets to 3,000-3,200 so final polished
+chapters reliably land in the 2,600-2,900 range after thinking overhead.
+
+**When all 3 refinements fail** (model stuck in thinking loop): write the missing
+section (summary/conclusion) directly in Python as editorial content rather than
+burning more credits on generation. The chapter body is already good — just needs
+the structural element to pass validation.
 
 ---
 
@@ -257,7 +320,54 @@ rm -rf ~/hermes ~/hermes-venv ~/bookforge-factory ~/ebook-project ~/planner \
        ~/fast-drafter ~/deep-polisher ~/skills ~/bookforge ~/the-ai-revolution
 ```
 
-## Amazon BSR Scraping via Firecrawl — Correct Approach
+## Ideogram Cover Prompts — Specificity Is Everything
+
+**Finding (2026-04-16):** Generic prompts produce generic covers. Specific visual metaphors produce 8.5/10 covers. The model isn't the bottleneck — the prompt is.
+
+**Before (3/10 result):**
+> "Deep warm orange gradient fading to near-black. Subtle geometric hexagon grid texture."
+
+**After (8.5/10 result) for productivity/ADHD:**
+> "Translucent human head shown front-facing, cool steel blue-gray tones. Brain visible inside skull split into two halves: left side chaotic tangled neural threads in dark muted colors, right side glowing organized orange geometric neural network with bright nodes. Orange energy sparks radiating outward. Deep black background. Cinematic lighting, photorealistic CGI render, dramatic contrast. No text."
+
+**Rule:** The prompt must describe the visual metaphor specific to the book topic, not just a color palette. Think: what image would make a reader immediately understand what this book is about?
+
+**Scoring reference from vision model:**
+- Abstract gradient: 3/10
+- Generic orange hexagon grid: 3/10
+- Split brain chaos/order (ADHD book): 8.5/10
+- Chaos vortex vs. geometric order (productivity): 8.5/10
+- Beam of light through fog: 6/10 (too sci-fi, genre-ambiguous)
+
+**Cover niche templates** are in `cover_generator.py` `NICHE_PALETTES` — updated with cinematic prompts for all 6 niches. Use `rendering_speed: "DEFAULT"` (not TURBO) when quality matters most ($0.06 vs $0.03).
+
+---
+
+## KDP Patching Existing Drafts — Use patch_kdp_book.py
+
+When a KDP draft exists but is missing description/keywords/cover (e.g., after upload created the book but fields didn't fill), do NOT re-run `kdp_upload.py` (creates a duplicate draft). Use the patcher instead:
+
+```bash
+source ~/hermes-agent/venv/bin/activate
+cd ~/.hermes/ebook-factory/skills/kdp-upload/
+python3 patch_kdp_book.py --book-id BOOK_ID_FROM_KDP_URL
+```
+
+**Finding the book ID:** It's in the KDP URL when you click "Continue setup" on a draft — pattern `kdp.amazon.com/en_US/title-setup/kindle/A1CLFE136T01RN/details`
+
+**What the patcher does:**
+1. Loads the saved session (no re-login)
+2. Navigates to the existing book's details page
+3. Fills description via CKEditor API
+4. Fills all 7 keywords
+5. Navigates to content page and uploads cover
+6. Saves as draft
+
+**After patching**, always verify in browser — session may expire before the verify check runs. Trust the patcher log output (`✓ Keywords filled: 7/7`, `✓ Cover upload triggered`), then check the live KDP page.
+
+---
+
+
 
 Firecrawl renders Amazon search pages with titles as **image alt-text links**, NOT H2 headings.
 The parser went through 4 rewrites before landing on the correct pattern:
@@ -386,3 +496,160 @@ The outliner parses topic plans with a very specific format. Wrong format = "No 
 ## Two Venvs in hermes-agent
 `~/hermes-agent/` has both `venv/` and `.venv/`. The active one is `venv/` — that's what `which hermes` points to.
 Always use: `source ~/hermes-agent/venv/bin/activate`
+
+---
+
+## Model Benchmark: 27B-16k Beats 35B-A3B for Chapter Drafting
+
+**Test (2026-04-16):** Both models given a 600-word chapter section prompt.
+
+| Model | Words | Time | W/Min | Done |
+|-------|-------|------|-------|------|
+| qwen3.5:27b-16k | 595 | 64s | 557 | `stop` ✅ |
+| qwen3.5:35b-a3b | 324 | 74s | 264 | `length` ❌ |
+
+**Why 35B loses on drafting:** It's a reasoning model. The thinking phase consumes ~400-500 tokens before generating any output. With `num_predict=5000`, that leaves ~4500 for actual content. The 27B dense model has no thinking overhead and generates continuously.
+
+**Rule:** Use 27B-16k for all chapter drafting. Use 35B-A3B for tasks where reasoning quality matters more than throughput (outlining, pattern analysis, structured planning).
+
+**`chapter_builder.py` DEFAULT_MODEL = "qwen3.5:27b-16k"** — already updated.
+
+Even with `/no_think` prefix, 35B still occasionally burns tokens on thinking. 27B-16k is the right tool for sustained writing.
+
+---
+
+## KDP Upload Automation — Real Form Selectors (2026-04-16)
+
+Extensive trial and error revealed the actual KDP form structure. Old selectors (`#bookTitle`, `#authorFirstName` etc.) no longer exist. Real selectors:
+
+```python
+# Step 1: Book Details
+"#data-title"                    # Book title
+"#data-subtitle"                 # Subtitle
+"#data-primary-author-first-name"  # Author first name
+"#data-primary-author-last-name"   # Author last name
+"#data-publisher-label"            # Publisher (NOTE: hidden field — skip gracefully)
+"input[name='data[is_adult_content]-radio'][value='false']"  # Adult content = No
+"#data-keywords-0" through "#data-keywords-6"  # Keywords
+
+# Description: CKEditor rich text editor (NOT textarea, NOT Froala)
+# iframe selector: "iframe[id^='cke_'], iframe.cke_wysiwyg_frame"
+# Set via iframe frame.evaluate("document.body.innerHTML = ...")
+# Fallback: JS on hidden input: "input[name='data[description]']"
+
+# Save buttons (real KDP ids):
+"#save-announce"                    # "Save as Draft"
+"#save-and-continue-announce"       # "Save and Continue"
+
+# Categories: React dropdown, name='react-aui-0' for main, name='react-aui-2' for sub
+# BUT: subcategory options are sparse (Self-Help only has "Compulsive Behavior")
+# SKIP categories automation — set manually in KDP dashboard after draft save
+```
+
+**Publisher field is hidden** (`class="lock-needs-hidden"`) — `wait_for_selector` times out. Use `safe_fill` which catches the timeout gracefully.
+
+**Save and Continue sometimes blocked by modal overlay** — dismiss with JS before clicking:
+```python
+page.evaluate("document.querySelectorAll('.a-modal-scroller, [data-action=\"a-popover-floating-close\"]').forEach(el => el.style.display='none')")
+```
+
+**Categories validation blocks Step 2** unless adult content is set first. Order matters:
+1. Set adult content radio = false
+2. Click Save and Continue (categories left blank triggers error, but we skip for now)
+
+The "Add a category" error from validation is acceptable — after saving, user sets categories manually in KDP dashboard. The draft saves successfully despite this error via the `#save-announce` button.
+
+---
+
+## KDP Session Setup — Required Before First Upload
+
+Amazon blocks automated Chromium/Playwright login with verification challenges (URL pattern: `ap/signin/NNN-NNNNN-NNNNN`). **Camoufox (anti-detect Firefox) reduces but doesn't eliminate this.**
+
+**Solution: one-time manual session save.**
+
+```bash
+source ~/hermes-agent/venv/bin/activate
+cd ~/.hermes/ebook-factory/skills/kdp-upload/
+python3 setup_kdp_session.py
+# Firefox opens → log in manually → press Enter → cookies saved to ~/.kdp-session/
+```
+
+After this, `kdp_upload.py` restores the session and skips sign-in entirely:
+```
+[07:20:12] Restoring saved KDP session...
+[07:20:17] Session restored — already signed in  ← cookies work
+```
+
+**Session lasts ~30 days.** After expiry, re-run `setup_kdp_session.py`.
+
+**Password update:** If password changed since last session, update `.env`:
+```bash
+python3 -c "
+path = '/home/bookforge/.hermes/.env'
+lines = open(path).readlines()
+new_lines = ['KDP_PASSWORD=NEWPASSWORD\n' if l.startswith('KDP_PASSWORD=') else l for l in lines]
+open(path, 'w').writelines(new_lines)
+print('Updated')
+"
+```
+Do NOT use `sed` for this — if password contains special characters, sed interprets them.
+
+**Telegram-based MFA pause:** If Amazon triggers verification mid-automation, the uploader sends a Telegram notification and polls for your "done" reply. Complete verification in the Firefox window, then reply "done" to @Hermes_Ebook_Factory_Bot.
+
+**Session expires fast in practice** — despite cookies lasting ~30 days in theory, Camoufox sessions expire within minutes when switching between scripts. If you see `CKEDITOR is not defined` or a redirect to sign-in, re-run `setup_kdp_session.py`. Don't try to verify fields after upload — just go look at the live KDP page in your browser.
+
+---
+
+## KDP Description/Keywords — Hidden Input Won't Work
+
+**Symptom:** Description and keywords appear empty in KDP after upload even though the script reported "Description set via JS" and "Keywords filled: 7/7".
+
+**Root cause:** KDP's description uses CKEditor, which maintains its own internal state separate from the underlying hidden `input[name='data[description]']`. Setting the hidden input value via JavaScript doesn't update CKEditor's state, so KDP ignores it on save.
+
+**Fix — use the CKEditor JavaScript API directly:**
+```python
+# CORRECT: use CKEditor's own API
+result = page.evaluate("""
+    (function() {
+        for (var id in CKEDITOR.instances) {
+            CKEDITOR.instances[id].setData(DESCRIPTION_TEXT_HERE);
+            return 'set: ' + id;
+        }
+        return 'no instance';
+    })()
+""")
+
+# OR: write to the iframe body directly
+cke_iframe = page.query_selector("iframe.cke_wysiwyg_frame")
+frame = cke_iframe.content_frame()
+frame.evaluate(f"document.body.innerHTML = {repr(description[:3900])}")
+```
+
+**Keywords** fill correctly via `#data-keywords-0` through `#data-keywords-6` selectors — these work as normal inputs.
+
+**patcher script** (`patch_kdp_book.py`) has the correct implementation for patching an existing draft without creating a new one.
+
+---
+
+## KDP Cover Upload — Content Page File Inputs
+
+The content page (`/title-setup/kindle/BOOK_ID/content`) has **3 file inputs**:
+1. Manuscript upload (EPUB)
+2. Cover image upload  
+3. A third input (unknown purpose — possibly audio/enhanced)
+
+The `accept` attribute doesn't reliably distinguish them. When the uploader iterates file inputs and looks for `"image"` in the accept attribute, it may not find it. Fallback: use the second file input by position (index 1) for cover.
+
+```python
+file_inputs = page.query_selector_all("input[type='file']")
+# Try by accept attr first
+for fi in file_inputs:
+    if "image" in (fi.get_attribute("accept") or ""):
+        fi.set_input_files(str(cover_path))
+        break
+# If not found by accept, try index 1 (second input = cover)
+elif len(file_inputs) > 1:
+    file_inputs[1].set_input_files(str(cover_path))
+```
+
+If cover still shows "No Cover Uploaded" after upload: go to KDP dashboard Step 2 and upload manually — it's a one-click process.
