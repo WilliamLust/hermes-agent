@@ -10,6 +10,30 @@ version: 1.0
 
 Lessons learned during the pipeline build. Check these before debugging.
 
+## EPUB Packager — Calibre Replacement NEEDED
+
+**Status (2026-04-16):** Calibre generates invalid EPUB XHTML (splits mid-list).
+eBook-Standardization-Toolkit (Claude-powered) fixes epubcheck errors but KDP
+STILL rejects the resulting EPUB. Root cause unknown.
+
+**Open question:** Is KDP running a stricter validator than epubcheck? Or is
+there a Calibre-specific artifact (mimetype ordering, EPUB2 vs EPUB3 mismatch,
+metadata format) that epubcheck passes but KDP rejects?
+
+**Options to investigate next session:**
+1. `pandoc` — markdown → EPUB3 directly, skips HTML intermediary
+   `pandoc chapter-*.md -o book.epub --epub-metadata meta.yaml`
+2. `ebooklib` — pure Python EPUB builder, full control
+3. Use one of the existing published books' EPUBs as a structural template
+   (they passed KDP — reverse engineer what's different)
+4. Try uploading the DOCX or HTML directly to KDP (KDP supports both)
+
+**Immediate workaround for Book 13:**
+KDP accepts .docx format. Convert the HTML to DOCX with pandoc and upload that.
+`pandoc book.html -o book.docx`
+
+---
+
 ## EPUB Validation — eBook-Standardization-Toolkit (REQUIRED)
 
 Calibre's HTML→EPUB conversion creates invalid XHTML when it splits files mid-list.
