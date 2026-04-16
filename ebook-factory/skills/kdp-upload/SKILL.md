@@ -1,29 +1,63 @@
 ---
 name: ebook-factory-kdp-upload
 category: ebook-factory
-description: "KDP Upload Helper — fills all KDP form fields from kdp-metadata.json, uploads EPUB + cover, saves draft. Never auto-submits. Sends Telegram when ready for human review."
-tags: [ebook, kdp, upload, playwright, automation]
-version: 1.0
+description: "KDP Upload Helper — fills title/description/keywords/cover on KDP. Saves as draft. Requires manual: EPUB upload, DRM, AI disclosure, categories, publish."
+tags: [ebook, kdp, upload, camoufox, automation]
+version: 1.1
 ---
 
 # Ebook Factory — KDP Upload Helper
 
-Automates Amazon KDP new title setup using Playwright (headless Chromium).
-Fills every form field, uploads EPUB and cover, saves as draft.
-The Publish button is NEVER clicked automatically — human review required.
+Automates the repetitive parts of KDP new title setup using Camoufox (anti-detect Firefox).
+Saves a draft with all metadata filled. The EPUB, DRM, AI disclosure, and Publish are manual.
 
 ## Location
 `~/.hermes/ebook-factory/skills/kdp-upload/kdp_upload.py`
 
-## Setup (one-time)
+## Honest Assessment
 
-Add KDP credentials to `~/.hermes/.env`:
-```
-KDP_EMAIL=your@amazon.com
-KDP_PASSWORD=yourpassword
+**At 5 books/month: just do it manually.** KDP sessions expire in hours,
+requiring `setup_kdp_session.py` before each use. The tool saves ~5 min/book —
+25 min/month — which may not justify the setup overhead at low volume.
+
+**At 10+ books/month:** clearly worthwhile. Automation compounds.
+
+## What It Does (Tested ✅)
+
+| Field | Status |
+|-------|--------|
+| Title, Subtitle | ✅ |
+| Author first/last name | ✅ |
+| Description (CKEditor iframe) | ✅ |
+| All 7 keywords | ✅ |
+| Cover image upload | ✅ |
+| Save as draft | ✅ |
+| Session restore from cookies | ✅ |
+
+## What Requires Manual Action in KDP
+
+| Step | Field | Time |
+|------|-------|------|
+| Step 2 | EPUB manuscript upload | 30 sec |
+| Step 2 | DRM selection (Yes) | 5 sec |
+| Step 2 | AI content disclosure (Yes) | 5 sec |
+| Step 1 | Categories (React modal) | 1-2 min |
+| Step 3 | Pricing review | 30 sec |
+| Step 3 | **Publish** (intentionally manual) | 5 sec |
+
+Total manual work after the uploader runs: ~3-4 minutes.
+
+## First-Time Setup (One-Time)
+
+```bash
+source ~/hermes-agent/venv/bin/activate
+cd ~/.hermes/ebook-factory/skills/kdp-upload/
+python3 setup_kdp_session.py
+# Firefox opens — log in manually — press Enter when on Bookshelf
+# Should save 14+ cookies
 ```
 
-These are only used locally. Never committed anywhere.
+Session lasts a few hours. Re-run `setup_kdp_session.py` when it expires.
 
 ## Usage
 
@@ -31,105 +65,29 @@ These are only used locally. Never committed anywhere.
 source ~/hermes-agent/venv/bin/activate
 cd ~/.hermes/ebook-factory/skills/kdp-upload/
 
-# Dry run — see exactly what would be filled (no browser, no KDP)
+# Dry run — preview what would be submitted
 python3 kdp_upload.py --dry-run
 
-# Real run (headless — runs invisibly)
-python3 kdp_upload.py
-
-# Watch the automation (non-headless)
+# Real run (visible browser)
 python3 kdp_upload.py --visible
 
-# Target a specific workbook
-python3 kdp_upload.py --book-dir ~/.hermes/ebook-factory/workbooks/book-slug/
-
-# Reuse saved login session (faster — skips sign-in)
-python3 kdp_upload.py --session-dir ~/.kdp-session
+# Specific workbook
+python3 kdp_upload.py --visible --book-dir PATH/TO/WORKBOOK
 ```
 
-## What It Does
+## Patching an Existing Draft
 
-```
-1. Load kdp-metadata.json from workbook/output/
-2. Sign in to KDP (or restore saved session from ~/.kdp-session/)
-3. Navigate to "Add new Kindle eBook"
-4. Step 1 — Fill Book Details:
-     Title, subtitle, author, publisher
-     Description (up to 4000 chars)
-     Keywords (up to 7)
-     Category (from BISAC code mapping)
-     KDP Select enrollment
-     Adult content flag
-5. Step 2 — Upload:
-     EPUB manuscript (from output/*.epub)
-     Cover image (from output/cover.jpg)
-6. Step 3 — Pricing:
-     Territories: Worldwide
-     Royalty: 70% (or 35% if price outside $2.99-$9.99)
-     US Price (from kdp-metadata.json pricing.us_price)
-7. Save as Draft — NEVER PUBLISH
-8. Screenshot saved to output/kdp-draft-screenshot.png
-9. Telegram notification: "Review and publish at kdp.amazon.com/bookshelf"
+To fill missing fields on an already-created draft (description, keywords, cover):
+
+```bash
+python3 patch_kdp_book.py --book-id A1CLFE136T01RN
+# Get the book ID from the KDP URL when editing the draft
 ```
 
-## What It Does NOT Do
+## Known Issues
 
-- Click "Publish" or "Submit for Review" — ever
-- Set up print edition
-- Handle A+ content
-- Manage KDP ads
-
-## Pipeline Position
-
-```
-Packager → output/
-  ├── manuscript.epub
-  ├── cover.jpg           ← from Ideogram (when ready)
-  └── kdp-metadata.json
-              ↓
-         kdp_upload.py --visible
-              ↓
-         KDP Draft saved
-              ↓
-         Telegram: "Review at bookshelf"
-              ↓
-         William publishes manually
-```
-
-## Credentials & Session
-
-Login session is saved to `~/.kdp-session/cookies.json` after first sign-in.
-Subsequent runs reuse the saved session — no password prompt.
-Sessions expire after ~30 days; delete the cookies.json to force re-login.
-
-## MFA / CAPTCHA Handling
-
-If Amazon triggers MFA or CAPTCHA during sign-in:
-- Run with `--visible` to see the browser
-- The script pauses and waits for you to complete verification manually
-- Then presses Enter in the terminal to continue
-
-## BISAC → KDP Category Mapping
-
-Maintained in `BISAC_TO_CATEGORY` dict in the script. Current mappings:
-```
-COM000000 → Computers & Technology > Internet & Social Media
-HEA000000 → Health, Fitness & Dieting > General
-SEL016000 → Self-Help > Time Management
-PSY016000 → Self-Help > Personal Transformation
-FAM004000 → Parenting & Relationships > Parenting
-BUS042000 → Business & Money > Management & Leadership
-```
-Add more as needed — KDP has ~300 Kindle categories.
-
-## Known Pitfalls
-
-- KDP UI changes frequently — field selectors may need updating
-  → Run `--visible` to diagnose, patch selectors in the script
-- Session cookies expire — delete `~/.kdp-session/cookies.json` to re-login
-- EPUB processing takes 1-3 minutes — script waits up to 3 min
-- Cover required for publishing — use Ideogram-generated cover or placeholder
-- KDP Select and 70% royalty require specific price ranges ($2.99-$9.99)
-- Description field uses a rich text editor (contenteditable div) on some accounts
-  → If fill fails, description must be pasted manually
-- After major Amazon UI updates: check field selectors still work with `--visible`
+- Session expires after a few hours → re-run `setup_kdp_session.py`
+- Publisher field is hidden in KDP's form → skip, add manually if needed
+- Categories modal uses React dynamic loading → not automated
+- EPUB file input detection works on content page but depends on page variant
+- If EPUB doesn't upload automatically, do it manually (30 seconds)
