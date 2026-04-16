@@ -769,6 +769,37 @@ Examples:
     kdp_path = build_kdp_metadata(meta, chapters, output_dir)
     outputs["kdp-metadata"] = kdp_path
 
+    # DOCX — KDP's most reliable upload format (pandoc)
+    log_section("Step 6b: Building DOCX (KDP upload format)")
+    html_path = output_dir / f"{meta['slug']}.html"
+    docx_path = output_dir / f"{meta['slug']}.docx"
+    pandoc = shutil.which("pandoc")
+    if pandoc and html_path.exists():
+        try:
+            result = subprocess.run(
+                [
+                    pandoc,
+                    str(html_path),
+                    "-o", str(docx_path),
+                    "--metadata", f"title={meta['title']}",
+                    "--metadata", f"author={meta.get('author', 'William Archer')}",
+                    "--toc",
+                ],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and docx_path.exists():
+                log(f"DOCX built via pandoc: {docx_path}")
+                outputs["docx"] = docx_path
+            else:
+                log(f"WARNING: pandoc DOCX failed: {result.stderr[:200]}")
+        except Exception as e:
+            log(f"WARNING: DOCX generation failed: {e}")
+    else:
+        if not pandoc:
+            log("WARNING: pandoc not found — skipping DOCX. Install with: sudo apt install pandoc")
+        else:
+            log("WARNING: HTML not found — skipping DOCX")
+
     # Package report
     log_section("Step 7: Writing package report")
     write_package_report(meta, outputs, chapters, output_dir)
@@ -788,7 +819,11 @@ Examples:
         elif path:
             log(f"  ✗ {fmt}: FAILED")
     log("")
-    log("Next: Upload to Amazon KDP using output/kdp-metadata.json as reference.")
+    log("Next: Upload to Amazon KDP.")
+    log("  → KDP UPLOAD ORDER (most reliable first):")
+    log("  1. DOCX  — most reliable, KDP converts cleanly")
+    log("  2. EPUB  — run through eBook-Standardization-Toolkit first")
+    log("  3. HTML  — fallback if others fail")
     sys.exit(0)
 
 
