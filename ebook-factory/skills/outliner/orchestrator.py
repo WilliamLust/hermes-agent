@@ -455,48 +455,79 @@ def find_vague_sections(outline: str) -> list[tuple[str, str]]:
 def regenerate_vague_sections(outline: str, vague: list[tuple[str, str]],
                                topic: dict) -> str | None:
     """
-    Ask Qwen 35B to rewrite only the vague sections with specific examples.
-    Returns the improved outline, or None if Ollama is unavailable.
+    Ask Qwen 35B to rewrite only the vague Example lines.
+    Returns ONLY the replacement lines as JSON, then patches them in — never
+    asks the model to return the full outline (too slow, too likely to timeout).
     """
     if not vague:
         return outline
 
-    # Build a targeted list for the model
     vague_list = "\n".join(
         f"  - Chapter '{ch}', Section '{sec}'" for ch, sec in vague
     )
     title = topic.get("title", "Unknown")
 
     system = (
-        "You are a nonfiction book editor. You receive a book outline with placeholder "
-        "examples and replace them with specific, concrete scenarios. "
-        "You ONLY rewrite the Example lines of the specified sections. "
-        "You do not change any other content. "
-        "Output the complete outline with the vague examples replaced."
+        "You are a nonfiction book editor. "
+        "You write specific, concrete example sentences for book outline sections. "
+        "Output ONLY a JSON array of objects with 'chapter', 'section', and 'example' keys. "
+        "No preamble. No explanation. JSON only."
     )
 
     user = (
-        f"This outline is for: '{title}'\n\n"
-        f"These sections have placeholder examples that need to be specific and concrete:\n"
+        f"Book: '{title}'\n\n"
+        f"These outline sections have placeholder examples that need to be specific:\n"
         f"{vague_list}\n\n"
-        f"Rules for the replacements:\n"
-        f"- Each example must describe a real scenario, name a specific technique, "
-        f"cite a study or data point, or give a concrete before/after\n"
-        f"- Do not use generic labels like 'Key example' or 'Success story'\n"
-        f"- Keep the same length as the original example field (~1-2 sentences)\n"
-        f"- Match the specificity of good examples already in the outline\n\n"
-        f"Here is the full outline:\n\n{outline}\n\n"
-        f"Return the complete outline with ONLY the vague examples replaced. "
-        f"Do not change anything else."
+        f"For each section, write a concrete example: a real scenario, named technique, "
+        f"specific data point, or concrete before/after. 1-2 sentences max.\n\n"
+        f"Output JSON array:\n"
+        f'[{{"chapter": "...", "section": "...", "example": "..."}}]'
     )
 
-    log(f"Regenerating {len(vague)} vague section(s) via Qwen 35B...")
-    improved = ollama_call(user, system, OUTLINE_MODEL,
-                           num_predict=len(outline.split()) * 2, temperature=0.7)
-    if improved and len(improved) > len(outline) * 0.7:
-        return improved
-    log("WARNING: Regeneration returned too-short result — keeping original outline")
-    return outline
+    log(f"Regenerating {len(vague)} vague section(s) via Qwen 35B (targeted call)...")
+    result = ollama_call(user, system, OUTLINE_MODEL, num_predict=600, temperature=0.7)
+
+    if not result:
+        log("WARNING: Vague section fix returned empty — keeping original outline")
+        return outline
+
+    # Parse the JSON replacements
+    try:
+        json_match = re.search(r"\[.*\]", result, re.DOTALL)
+        if not json_match:
+            log("WARNING: Could not parse replacement JSON — keeping original outline")
+            return outline
+
+        replacements = json.loads(json_match.group(0))
+    except Exception as e:
+        log(f"WARNING: JSON parse failed ({e}) — keeping original outline")
+        return outline
+
+    # Surgically patch each Example line in the outline
+    patched = outline
+    patch_count = 0
+    for item in replacements:
+        section = item.get("section", "")
+        new_example = item.get("example", "").strip()
+        if not section or not new_example:
+            continue
+
+        # Find the section block and replace just its Example line
+        # Pattern: section title followed by lines until the next numbered section or chapter
+        section_escaped = re.escape(section)
+        pattern = rf"(\*\*\[{section_escaped}\]\*\*.*?- \*\*Example:\*\* )[^\n]+"
+        replacement = rf"\g<1>{new_example}"
+        new_patched = re.sub(pattern, replacement, patched, flags=re.DOTALL | re.IGNORECASE)
+
+        if new_patched != patched:
+            patched = new_patched
+            patch_count += 1
+            log(f"  Patched example in '{section}'")
+        else:
+            log(f"  WARNING: Could not locate section '{section}' for patching")
+
+    log(f"  {patch_count}/{len(replacements)} section(s) patched")
+    return patched
 
 
 # ======================================================================
@@ -506,7 +537,7 @@ def regenerate_vague_sections(outline: str, vague: list[tuple[str, str]],
 def main():
     parser = argparse.ArgumentParser(description="Generate LLM-driven book outline")
     parser.add_argument("--topic",    type=str, help="Topic title (or substring)")
-    parser.add_argument("--chapters", type=int, default=10, help="Number of chapters")
+    parser.add_argument("--chapters", type=int, default=12, help="Number of chapters")
     parser.add_argument("--niche",    type=str, default="", help="Override niche label")
     args = parser.parse_args()
 
