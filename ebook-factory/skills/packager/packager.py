@@ -1063,6 +1063,75 @@ def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path
 
     lines += [
         sep,
+        "DRAFT2DIGITAL",
+        sep,
+        "",
+        "Upload at: https://www.draft2digital.com/books",
+        "Use EPUB file (D2D formats it — better than DOCX for their system)",
+        f"  EPUB: {str(output_dir / 'book-*.epub') if not list(output_dir.glob('*.epub')) else str(next(output_dir.glob('*.epub'), ''))}",
+        "",
+        thin,
+        "METADATA (same as KDP except where noted)",
+        thin,
+        "",
+        f"  Title:           {title}",
+        f"  Subtitle:        {subtitle}",
+        f"  Author:          {author}",
+        "  Language:        English",
+        "  Series:          (leave blank)",
+        "  Target Audience: Adult (18+)",
+        "",
+        "  Search Terms (type each phrase, press Enter after each):",
+    ]
+
+    for kw in keywords[:7]:
+        if kw:
+            lines.append(f"    {kw}")
+
+    lines += [
+        "",
+        f"  BISAC: {bisac_label}",
+        "",
+        thin,
+        "DESCRIPTION (plain text — D2D formats it, no HTML needed)",
+        thin,
+        "",
+        description_plain,
+        "",
+        thin,
+        "SHORT DESCRIPTION (1-2 sentences — shown on Smashwords store)",
+        thin,
+        "",
+    ]
+
+    # Generate a short description from the first sentence of description_plain
+    if description_plain:
+        first_sentence = description_plain.split(".")[0].strip("*# ") + "."
+        lines.append(f"  {first_sentence}")
+    else:
+        lines.append(f"  A practical, evidence-based guide to {title.split(':')[0]}.")
+
+    lines += [
+        "",
+        thin,
+        "PRICING",
+        thin,
+        "",
+        f"  USD Price: ${price:.2f}",
+        "  Territorial prices: set CAD/GBP/AUD/EUR manually if desired",
+        "",
+        thin,
+        "VENDORS (select all — Draft2Digital distributes to)",
+        thin,
+        "",
+        "  Apple Books, Barnes & Noble, Kobo, Scribd, OverDrive,",
+        "  Baker & Taylor, Smashwords, Tolino, and others",
+        "  (use Toggle Button to select all at once)",
+        "",
+    ]
+
+    lines += [
+        sep,
         "PRE-UPLOAD CHECKLIST",
         sep,
         "",
@@ -1090,6 +1159,15 @@ def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path
         "  [ ] KDP preview approved",
         "  [ ] Set 7-day performance check reminder",
         "  [ ] Set 30-day performance check reminder",
+        "",
+        "Draft2Digital",
+        "  [ ] EPUB uploaded",
+        "  [ ] Metadata entered (title, subtitle, author, search terms, BISAC)",
+        "  [ ] Description entered (plain text)",
+        "  [ ] Layout reviewed (no duplicate front matter)",
+        "  [ ] Price set",
+        "  [ ] All vendors selected",
+        "  [ ] Submitted",
         "",
         sep,
         "Remember: 80% shipped beats 100% perfect.",
