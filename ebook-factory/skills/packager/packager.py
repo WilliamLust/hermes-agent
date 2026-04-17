@@ -99,80 +99,133 @@ def find_latest_workbook() -> Path:
 # LLM METADATA GENERATION
 # ============================================================================
 
-# Reference — the ADHD book description is the quality standard to match
-_DESCRIPTION_EXAMPLE = (
-    "Every productivity system you've tried has failed you. GTD. Pomodoro. Time blocking. "
-    "Morning routines. You've bought the books, tried the apps, and abandoned everything by "
-    "week two. This isn't a character flaw. It's a neurological mismatch.\n\n"
-    "Productivity for ADHD Adults builds a system from scratch for how your brain actually "
-    "works — not how productivity gurus assume it should. Drawing on Dr. Russell Barkley's "
-    "research on executive function, Gollwitzer's implementation intentions, and strategies "
-    "used by adults with ADHD who ship real work, this book gives you four concrete pillars: "
-    "environment design, dopamine management, time externalization, and energy scheduling. "
-    "No willpower required.\n\n"
-    "You are not broken. You are mismatched with standard advice. This book fixes the match."
-)
+# Quality bar — the Procrastination Fix description format is what we're matching:
+# hook paragraph → what the book reveals (named bullet features) → reader callout
+_DESCRIPTION_EXAMPLE = """\
+**You're not lazy. You're stuck. And there's a difference.**
 
-_SUBTITLE_EXAMPLE = "Stop Fighting Your Brain and Start Getting Things Done"
+You know exactly what you should be doing. That project that matters. That deadline looming. \
+But here you are, doing literally anything except the thing that actually matters.
+
+**The Procrastination Fix** reveals what research has known for years: procrastination isn't \
+about laziness. It's an emotional regulation problem. You're not avoiding the task — you're \
+avoiding the anxiety, boredom, or self-doubt it triggers.
+
+This book gives you the tools to break that pattern:
+
+• **The 2-Minute Bridge** — A micro-commitment technique that tricks your brain past the starting line
+• **Emotion-First Planning** — Stop planning around tasks. Start planning around feelings.
+• **The Zero-Draft Method** — Why permission to produce garbage is the fastest path to quality work
+• **The 80% Rule** — When good enough beats perfect every single time
+
+No motivational fluff. No generic advice. Just specific, research-backed techniques that work \
+even when you don't feel like it.
+
+Whether you're a perfectionist who freezes, a deadline-driven crammer, or someone who works \
+more hours than everyone else but on all the wrong things — this book meets you where you are.
+
+Ready to stop stalling and start doing? Your future self is waiting.\
+"""
+
+_SUBTITLE_EXAMPLE = "Evidence-Based Strategies to Stop Stalling and Start Doing"
+
+# KDP HTML description example (same content, formatted for KDP's CKEditor)
+_HTML_DESCRIPTION_EXAMPLE = """\
+<p><strong>You're not lazy. You're stuck. And there's a difference.</strong></p>
+<p>You know exactly what you should be doing. That project that matters. That deadline looming. \
+But here you are, doing literally anything except the thing that actually matters.</p>
+<p><strong>The Procrastination Fix</strong> reveals what research has known for years: \
+procrastination isn't about laziness. It's an emotional regulation problem.</p>
+<p>This book gives you the tools to break that pattern:</p>
+<ul>
+<li><strong>The 2-Minute Bridge</strong> — A micro-commitment technique that tricks your brain past the starting line</li>
+<li><strong>Emotion-First Planning</strong> — Stop planning around tasks. Start planning around feelings.</li>
+<li><strong>The Zero-Draft Method</strong> — Why permission to produce garbage is the fastest path to quality work</li>
+<li><strong>The 80% Rule</strong> — When good enough beats perfect every single time</li>
+</ul>
+<p>No motivational fluff. No generic advice. Just specific, research-backed techniques that work \
+even when you don't feel like it.</p>
+<p>Ready to stop stalling and start doing? Your future self is waiting.</p>\
+"""
 
 
 def generate_llm_metadata(title: str, outline_content: str) -> dict:
     """
-    Use Qwen 27B to write a marketing-quality subtitle and KDP description.
-    Returns {"subtitle": str, "description": str} or empty strings on failure.
-    Falls back silently — packager continues with placeholder values if LLM fails.
-    """
-    # Extract chapter titles from outline as context for the LLM
-    ch_titles = re.findall(r"^## Chapter \d+:\s*(.+)", outline_content, re.MULTILINE)
-    ch_summary = "\n".join(f"- {t}" for t in ch_titles[:10]) if ch_titles else "(outline not parsed)"
+    Use Qwen 27B to generate full marketing copy:
+    - subtitle (5-9 words, specific promise)
+    - description_plain (multi-paragraph with bullet features, ~200-280 words)
+    - description_html (same content formatted for KDP's CKEditor)
+    - gumroad_description (slightly longer, Gumroad-optimized)
+    - receipt_message (personal thank-you + quick start tips)
+    - keywords (7 specific Amazon search phrases)
 
-    # Extract core promise and voice style if outliner wrote them
+    Returns dict with all fields, or empty strings on failure.
+    Falls back silently — packager continues with placeholders if LLM fails.
+    """
+    ch_titles = re.findall(r"^## Chapter \d+:\s*(.+)", outline_content, re.MULTILINE)
+    ch_summary = "\n".join(f"- {t}" for t in ch_titles[:12]) if ch_titles else "(chapters not found)"
+
     promise_match = re.search(r"\*\*Core Promise:\*\*\s*(.+)", outline_content)
     promise = promise_match.group(1).strip() if promise_match else ""
-    voice_match = re.search(r"\*\*Voice Style:\*\*\s*(.+)", outline_content)
-    voice = voice_match.group(1).strip() if voice_match else ""
     reader_match = re.search(r"\*\*Target Reader:\*\*\s*(.+)", outline_content)
     reader = reader_match.group(1).strip() if reader_match else ""
 
-    system = """You are a professional Amazon KDP book marketer who writes descriptions that convert browsers to buyers.
+    system = """You are a professional nonfiction book marketer who writes Amazon KDP copy that converts browsers to buyers.
 
-Your descriptions:
-- Open with a hook that names the reader's exact pain point
-- Build urgency by validating their frustration with existing solutions
-- Introduce the book's specific approach and unique angle
-- List concrete outcomes (not vague promises)
-- End with a strong buying trigger
-- Use short paragraphs (3-4 sentences max each)
-- No hollow phrases: no "comprehensive guide", no "journey", no "whether you're a beginner or expert"
-- Total length: 3 tight paragraphs, 100-180 words
+Your descriptions follow this exact structure:
+1. Bold hook sentence that names the reader's exact pain
+2. 1-2 sentences validating their frustration with existing solutions
+3. Bold book title + what it reveals (1 sentence)
+4. 4-6 bullet features, each formatted as: • **Feature Name** — specific benefit or technique
+5. 1-2 sentences: no fluff, just what this book delivers
+6. 1-2 sentences: who this is for (specific, not generic)
+7. Closing call to action (1 short line)
 
-Subtitles:
-- Specific promise of the transformation
-- 5-9 words
-- No colons, no exclamation marks
-- Should make someone think "that's exactly what I need"
+Rules:
+- Write in second person (you/your throughout)
+- Every bullet names a specific technique or framework from the book
+- No hollow phrases: no "comprehensive", "journey", "whether you're a beginner or expert"
+- Specific research/data beats vague claims
+- HTML version uses <p>, <strong>, <ul>, <li> only (KDP supports these)
+- Gumroad description is the same content with → bullet points instead of •
+- Receipt message is personal, warm, gives 2-3 quick-start tips, signed "William Archer"
+- Keywords are 2-4 word Amazon search phrases buyers actually type
 
-Output JSON only: {"subtitle": "...", "description": "..."}"""
+Output JSON only with these exact keys:
+{
+  "subtitle": "...",
+  "description_plain": "...",
+  "description_html": "...",
+  "gumroad_description": "...",
+  "receipt_message": "...",
+  "keywords": ["...", "...", "...", "...", "...", "...", "..."]
+}"""
 
-    user = f"""Write Amazon KDP metadata for this nonfiction ebook.
+    user = f"""Write complete Amazon KDP + Gumroad marketing copy for this nonfiction ebook.
 
 TITLE: {title}
 CORE PROMISE: {promise}
 TARGET READER: {reader}
-VOICE STYLE: {voice}
 
-CHAPTER OVERVIEW:
+CHAPTERS (use these to write specific bullet features):
 {ch_summary}
 
-QUALITY STANDARD — This is the bar to match (Productivity for ADHD Adults):
-Subtitle: "{_SUBTITLE_EXAMPLE}"
-Description:
-"{_DESCRIPTION_EXAMPLE}"
+QUALITY STANDARD — Match this format exactly (The Procrastination Fix):
 
-Now write the subtitle and description for "{title}".
-Output ONLY valid JSON: {{"subtitle": "...", "description": "..."}}"""
+Plain description:
+---
+{_DESCRIPTION_EXAMPLE}
+---
 
-    log("Generating subtitle + description via Qwen 27B...")
+HTML description:
+---
+{_HTML_DESCRIPTION_EXAMPLE}
+---
+
+Now write all marketing copy for "{title}".
+Output ONLY valid JSON with all 6 keys."""
+
+    log("Generating full marketing copy via Qwen 27B...")
     try:
         resp = requests.post(
             OLLAMA_URL,
@@ -184,35 +237,34 @@ Output ONLY valid JSON: {{"subtitle": "...", "description": "..."}}"""
                 ],
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0.7, "num_predict": 800},
+                "options": {"temperature": 0.7, "num_predict": 1800},
             },
             timeout=300,
         )
         resp.raise_for_status()
         raw = resp.json()["message"]["content"].strip()
-        # Strip any stray thinking blocks
         raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        # Extract JSON (may be wrapped in ```json blocks)
         json_match = re.search(r"\{.*\}", raw, re.DOTALL)
         if not json_match:
             log("WARNING: LLM did not return JSON for metadata — using fallback")
-            return {"subtitle": "", "description": ""}
+            return {}
         data = json.loads(json_match.group(0))
-        subtitle = data.get("subtitle", "").strip()
-        description = data.get("description", "").strip()
-        if subtitle and description:
-            log(f"  Subtitle: {subtitle}")
-            log(f"  Description: {description[:80]}...")
-            return {"subtitle": subtitle, "description": description}
-        else:
-            log("WARNING: LLM returned empty subtitle or description")
-            return {"subtitle": "", "description": ""}
+        # Validate all keys present
+        required = ["subtitle", "description_plain", "description_html",
+                    "gumroad_description", "receipt_message", "keywords"]
+        for key in required:
+            if key not in data:
+                data[key] = ""
+        log(f"  Subtitle: {data.get('subtitle', '')}")
+        log(f"  Description: {str(data.get('description_plain',''))[:80]}...")
+        log(f"  Keywords: {data.get('keywords', [])}")
+        return data
     except requests.exceptions.ConnectionError:
         log("WARNING: Ollama not reachable — metadata LLM skipped")
-        return {"subtitle": "", "description": ""}
+        return {}
     except Exception as e:
         log(f"WARNING: Metadata LLM failed: {e}")
-        return {"subtitle": "", "description": ""}
+        return {}
 
 
 # ============================================================================
@@ -270,22 +322,25 @@ def extract_book_metadata(workbook_dir: Path, outline_path: Path, cli_args) -> d
     description = desc_match.group(1).strip()[:200] if desc_match else f"A practical guide to {title}."
 
     # Generate LLM subtitle + description (overwrites regex fallback if successful)
-    llm_meta = generate_llm_metadata(title, outline_content)
+    llm_meta   = generate_llm_metadata(title, outline_content)
     subtitle   = llm_meta.get("subtitle", "")
-    if llm_meta.get("description"):
-        description = llm_meta["description"]
+    if llm_meta.get("description_plain"):
+        description = llm_meta["description_plain"]
 
     return {
-        "title": title,
-        "subtitle": subtitle,
-        "author": author,
-        "slug": slug,
-        "language": DEFAULT_LANGUAGE,
-        "description": description,
-        "keywords": keywords,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "publisher": "William Archer",
-        "rights": f"Copyright {datetime.now().year} {author}. All rights reserved.",
+        "title":               title,
+        "subtitle":            subtitle,
+        "author":              author,
+        "slug":                slug,
+        "language":            DEFAULT_LANGUAGE,
+        "description":         description,
+        "description_html":    llm_meta.get("description_html", ""),
+        "gumroad_description": llm_meta.get("gumroad_description", ""),
+        "receipt_message":     llm_meta.get("receipt_message", ""),
+        "keywords":            keywords or llm_meta.get("keywords", []),
+        "date":                datetime.now().strftime("%Y-%m-%d"),
+        "publisher":           "William Archer",
+        "rights":              f"Copyright {datetime.now().year} {author}. All rights reserved.",
     }
 
 
@@ -783,18 +838,37 @@ def build_kdp_metadata(meta: dict, chapters: list, output_dir: Path) -> Path:
 
 def generate_description_html(meta: dict) -> str:
     """
-    Convert the plain-text description from metadata into KDP-ready HTML.
-    KDP's CKEditor accepts a limited HTML subset:
-      <p>, <b>, <strong>, <em>, <i>, <ul>, <ol>, <li>, <br>
-    Strategy: split paragraphs on blank lines, wrap each in <p>.
-    Double-asterisk **text** → <strong>text</strong>.
+    Return KDP-ready HTML description.
+    Priority: LLM-generated HTML (description_html field) > convert plain text.
     """
+    # Use LLM-generated HTML if available
+    if meta.get("description_html"):
+        return meta["description_html"]
+
+    # Fall back: convert plain text description to basic HTML
     raw = meta.get("description", f"A practical guide to {meta.get('title', 'this topic')}.")
-    # Bold markdown
+    # Bold markdown **text** → <strong>text</strong>
     raw = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', raw)
-    # Split into paragraphs
-    paragraphs = [p.strip() for p in re.split(r'\n\n+', raw) if p.strip()]
-    return "\n".join(f"<p>{p}</p>" for p in paragraphs)
+    # Bullet lines starting with • or - → <ul><li>
+    lines = raw.split("\n")
+    result = []
+    in_ul = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(("• ", "- ", "* ")):
+            if not in_ul:
+                result.append("<ul>")
+                in_ul = True
+            result.append(f"<li>{stripped[2:].strip()}</li>")
+        else:
+            if in_ul:
+                result.append("</ul>")
+                in_ul = False
+            if stripped:
+                result.append(f"<p>{stripped}</p>")
+    if in_ul:
+        result.append("</ul>")
+    return "\n".join(result)
 
 
 # ── KDP Upload Kit ─────────────────────────────────────────────────────────────
@@ -875,133 +949,151 @@ BISAC_LABELS = {
 
 def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path) -> None:
     """
-    Write kdp-upload-kit.txt — plain text, copy-paste guide for KDP upload.
-    No markdown. Opens cleanly in any text editor.
+    Write kdp-upload-kit.txt — plain text, matches the format of published-book upload kits.
+    Structure: KDP section → Gumroad section → Pre-Upload Checklist
     """
-    total_words = sum(len(ch["content"].split()) for ch in chapters)
+    total_words  = sum(len(ch["content"].split()) for ch in chapters)
     bisac        = meta.get("bisac_category", "SEL027000")
     categories   = BISAC_CATEGORIES.get(bisac, BISAC_CATEGORIES["SEL027000"])
     bisac_label  = BISAC_LABELS.get(bisac, bisac)
     description_html = generate_description_html(meta)
+    description_plain = meta.get("description", "")
     keywords     = meta.get("keywords", [])
     while len(keywords) < 7:
         keywords.append("")
 
-    docx_path  = outputs.get("docx", "")
-    cover_path = str(output_dir / "cover.jpg") if (output_dir / "cover.jpg").exists() \
-                 else "cover.jpg (run cover generator first)"
+    gumroad_desc    = meta.get("gumroad_description", "")
+    receipt_msg     = meta.get("receipt_message", "")
+    docx_path       = str(outputs.get("docx", ""))
+    cover_path      = str(output_dir / "cover.jpg") if (output_dir / "cover.jpg").exists() \
+                      else "cover.jpg (run cover generator first)"
+    title    = meta.get("title", "")
+    subtitle = meta.get("subtitle", "")
+    author   = meta.get("author", "William Archer")
+    price    = meta.get("pricing", {}).get("us_price", 4.99)
 
     sep  = "=" * 60
     thin = "-" * 60
 
-    def field(label, value, note=""):
-        lines = [f"  {label}"]
-        lines.append(f"  >>> {value}")
-        if note:
-            lines.append(f"  NOTE: {note}")
-        lines.append("")
-        return lines
-
     lines = [
         sep,
-        f"  KDP UPLOAD KIT",
-        f"  {meta.get('title', '')}",
-        sep,
-        f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        f"  Upload at:  https://kdp.amazon.com/en_US/title-setup/kindle/new/details",
-        "",
-        "  Follow steps IN ORDER. Each section = one KDP page.",
-        "  Copy the text after >>> into the corresponding KDP field.",
-        "",
-        sep,
-        "  STEP 1 OF 3 — BOOK DETAILS",
+        f"Upload Kit — {title}",
         sep,
         "",
-        *field("TITLE", meta.get("title", "")),
-        *field("SUBTITLE", meta.get("subtitle", "") or "(leave blank)"),
-        *field("SERIES", "(leave blank)"),
-        *field("AUTHOR (first name)", meta.get("author", "William Archer").split()[0]),
-        *field("AUTHOR (last name)",  meta.get("author", "William Archer").split()[-1]),
-        *field("CONTRIBUTOR / SECONDARY AUTHOR", "(leave blank)"),
+        f"Title:      {title}",
+        f"Subtitle:   {subtitle}",
+        f"Author:     {author}",
+        f"Word Count: {total_words:,}",
+        f"Chapters:   {len(chapters)}",
+        f"Book Files:",
+        f"  Manuscript: {docx_path}",
+        f"  Cover:      {cover_path}",
+        "",
+        sep,
+        "KDP METADATA",
+        sep,
+        "",
         thin,
-        "  DESCRIPTION",
-        "  Click the </> button in KDP's description box to switch to HTML mode.",
-        "  Then paste the block below exactly as shown:",
-        "",
-        "  >>> (HTML — copy everything between the lines)",
+        "DESCRIPTION (plain text — paste as-is or use for reference)",
         thin,
+        "",
+        description_plain,
+        "",
+        thin,
+        "DESCRIPTION (HTML — click </> in KDP description box, paste this)",
+        thin,
+        "",
         description_html,
-        thin,
         "",
-        *field("PUBLISHING RIGHTS", "I own the copyright and I hold the necessary publishing rights."),
         thin,
-        "  KEYWORDS  (7 separate fields — one phrase per field)",
+        "KEYWORDS (7 fields — one phrase each)",
+        thin,
         "",
     ]
 
     for i, kw in enumerate(keywords[:7], 1):
-        lines.append(f"  Keyword {i}:  >>> {kw}")
-    lines.append("")
+        lines.append(f"  {i}. {kw}")
 
     lines += [
+        "",
         thin,
-        f"  CATEGORIES  (choose 3 — navigate KDP's tree browser)",
-        f"  BISAC reference: {bisac_label}",
+        "CATEGORIES (navigate KDP's tree browser)",
+        f"BISAC reference: {bisac_label}",
+        thin,
         "",
     ]
     for i, cat in enumerate(categories[:3], 1):
-        lines.append(f"  Category {i}:  >>> {cat}")
+        lines.append(f"  {i}. {cat}")
 
     lines += [
         "",
-        *field("ADULT CONTENT", "No"),
+        thin,
+        "PRICING",
+        thin,
+        "",
+        f"  KDP eBook:   ${price:.2f}",
+        f"  KDP Print:   $9.99",
+        f"  Gumroad:     $9.99",
+        "",
+    ]
+
+    if gumroad_desc:
+        lines += [
+            sep,
+            "GUMROAD LISTING",
+            sep,
+            "",
+            thin,
+            "Gumroad Description",
+            thin,
+            "",
+            gumroad_desc,
+            "",
+        ]
+
+    if receipt_msg:
+        lines += [
+            thin,
+            "Gumroad Custom Receipt Message",
+            thin,
+            "",
+            receipt_msg,
+            "",
+        ]
+
+    lines += [
         sep,
-        "  STEP 2 OF 3 — CONTENT",
+        "PRE-UPLOAD CHECKLIST",
         sep,
         "",
-        "  MANUSCRIPT FILE  (upload the DOCX — most reliable KDP format)",
-        f"  >>> {docx_path}",
-        "",
-        "  COVER IMAGE  (1600x2560 px JPG, under 5 MB)",
-        f"  >>> {cover_path}",
-        "",
-        *field("ISBN", "Get a free KDP ISBN  (recommended)"),
-        *field("PUBLICATION DATE", meta.get("date", datetime.now().strftime("%Y-%m-%d"))),
-        sep,
-        "  STEP 3 OF 3 — RIGHTS & PRICING",
-        sep,
-        "",
-        *field("TERRITORY RIGHTS", "Worldwide rights — I hold worldwide rights"),
-        *field("KDP SELECT", "Enroll in KDP Select  (enables Kindle Unlimited)"),
-        *field("PRIMARY MARKETPLACE", "Amazon.com (USD)"),
-        *field("PRICE",
-               f"${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
-               "Stay between $2.99-$9.99 for 70% royalty"),
-        *field("ROYALTY PLAN", "70%"),
-        sep,
-        "  BOOK SUMMARY",
-        sep,
-        "",
-        f"  Title:       {meta.get('title', '')}",
-        f"  Author:      {meta.get('author', 'William Archer')}",
-        f"  Chapters:    {len(chapters)}",
-        f"  Word count:  {total_words:,}",
-        f"  Price:       ${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
-        f"  BISAC:       {bisac} ({bisac_label})",
-        "",
-        sep,
-        "  CHECKLIST — tick off before submitting",
-        sep,
-        "",
-        f"  [ ] Manuscript DOCX uploaded:  {docx_path}",
-        f"  [ ] Cover JPG uploaded:        {cover_path}",
-        "  [ ] Description HTML pasted (HTML source mode)",
-        "  [ ] All 7 keywords filled",
+        "KDP",
+        f"  [ ] Manuscript uploaded (DOCX): {docx_path}",
+        f"  [ ] Cover uploaded (JPG 1600x2560): {cover_path}",
+        "  [ ] Description pasted (HTML source mode)",
+        "  [ ] 7 keywords entered",
         "  [ ] 3 categories selected",
-        "  [ ] Price set",
-        "  [ ] KDP Select enrolled",
-        "  [ ] Click Save and Continue on each step",
+        f"  [ ] Price set (${price:.2f} eBook)",
+        "  [ ] Preview reviewed in KDP previewer",
+        "  [ ] Adult content: No",
+        "  [ ] Publishing rights confirmed",
         "",
+        "Gumroad",
+        "  [ ] Product page created",
+        "  [ ] PDF + EPUB uploaded",
+        "  [ ] Description set",
+        "  [ ] Cover/thumbnail set",
+        "  [ ] Price set ($9.99)",
+        "  [ ] Button message set",
+        "  [ ] Custom receipt message set",
+        "",
+        "Post-Upload",
+        "  [ ] KDP preview approved",
+        "  [ ] Set 7-day performance check reminder",
+        "  [ ] Set 30-day performance check reminder",
+        "",
+        sep,
+        "Remember: 80% shipped beats 100% perfect.",
+        "Get this live, then iterate based on feedback.",
         sep,
     ]
 
