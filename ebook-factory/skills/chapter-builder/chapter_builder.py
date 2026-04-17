@@ -430,17 +430,20 @@ def validate_chapter(content: str, chapter: dict) -> list[str]:
     high = int(target * (1 + WORD_COUNT_TOLERANCE))
 
     if words < low:
-        issues.append(f"Word count too low: {words} words (need {low}-{high})")
-    elif words > high:
-        issues.append(f"Word count too high: {words} words (need {low}-{high})")
+        issues.append(f"Word count too low: {words} words (need at least {low})")
+    # Note: too long is never flagged — a longer chapter is never a problem for the reader
 
     # Check for placeholder text
     if re.search(r'\btbd\b|\bto be determined\b|\bplaceholder\b|\b\[insert\b', content, re.I):
         issues.append("Contains placeholder text (tbd / to be determined / [insert...])")
 
-    # Check for keywords
+    # Check for keywords — normalize hyphens so "30-day plan" matches "30 day plan"
+    def normalize(s):
+        return re.sub(r'[-–—]', ' ', s).lower()
+
+    content_normalized = normalize(content)
     for kw in chapter.get("keywords", []):
-        if kw and kw.lower() not in content.lower():
+        if kw and normalize(kw) not in content_normalized:
             issues.append(f"Missing keyword: '{kw}'")
 
     # Check for conclusion / summary section

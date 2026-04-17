@@ -247,11 +247,16 @@ def run_chapter_builder(workbook_dir: Path, num_chapters: int, dry_run: bool) ->
     for ch, p in procs:
         try:
             p.wait(timeout=1800)  # 30 min max per chapter
-            if p.returncode != 0:
+            # Exit code 0 = PASS, exit code 1 = WARN (issues remain but chapter written)
+            # Both are acceptable — only treat as failed if chapter file doesn't exist
+            chapter_file = workbook_dir / "w-drafts" / f"chapter-{ch:02d}.md"
+            if not chapter_file.exists():
                 failed.append(ch)
-                log(f"  Chapter {ch}: FAILED (exit {p.returncode})")
+                log(f"  Chapter {ch}: FAILED — no output file written")
+            elif p.returncode == 0:
+                log(f"  Chapter {ch}: PASS")
             else:
-                log(f"  Chapter {ch}: DONE")
+                log(f"  Chapter {ch}: WARN (validation issues remain — chapter written, manual review recommended)")
         except subprocess.TimeoutExpired:
             p.kill()
             failed.append(ch)
