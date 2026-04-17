@@ -244,12 +244,26 @@ def extract_book_metadata(workbook_dir: Path, outline_path: Path, cli_args) -> d
     author = cli_args.author if cli_args.author else DEFAULT_AUTHOR
     slug = workbook_dir.name
 
-    # Extract keywords from outline
+    # Load keywords from existing kdp-metadata.json if available (clean Qwen-generated phrases)
+    # Fall back to scraping outline keywords only if no metadata file exists yet
     keywords = []
-    kw_match = re.search(r'[Kk]eywords?[^:]*:\s*(.+)', outline_content)
-    if kw_match:
-        raw = kw_match.group(1).strip().strip("[]")
-        keywords = [k.strip().strip("'\"") for k in raw.split(",") if k.strip()][:7]
+    existing_meta_path = workbook_dir / "output" / "kdp-metadata.json"
+    if existing_meta_path.exists():
+        try:
+            existing_meta = json.loads(existing_meta_path.read_text(encoding="utf-8"))
+            keywords = existing_meta.get("keywords", [])
+            if keywords:
+                log(f"Loaded {len(keywords)} keywords from existing kdp-metadata.json")
+        except Exception:
+            pass
+
+    if not keywords:
+        # Scrape from outline as fallback — strip markdown artifacts
+        kw_match = re.search(r'[Kk]eywords?[^:]*:\s*(.+)', outline_content)
+        if kw_match:
+            raw = kw_match.group(1).strip().strip("[]")
+            raw = re.sub(r'\*+', '', raw)  # strip bold markers
+            keywords = [k.strip().strip("'\"") for k in raw.split(",") if k.strip() and len(k.strip()) > 2][:7]
 
     # Extract description from outline intro
     desc_match = re.search(r'(?:description|summary|about)[^:]*:\s*(.+?)(?:\n\n|\Z)', outline_content, re.I | re.DOTALL)
@@ -861,176 +875,137 @@ BISAC_LABELS = {
 
 def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path) -> None:
     """
-    Write kdp-upload-kit.md — a complete, ordered copy-paste guide for KDP upload.
-    Covers every field in the order KDP presents them across all 3 steps.
+    Write kdp-upload-kit.txt — plain text, copy-paste guide for KDP upload.
+    No markdown. Opens cleanly in any text editor.
     """
     total_words = sum(len(ch["content"].split()) for ch in chapters)
-    bisac = meta.get("bisac_category", "SEL027000")
-    categories = BISAC_CATEGORIES.get(bisac, BISAC_CATEGORIES["SEL027000"])
-    bisac_label = BISAC_LABELS.get(bisac, bisac)
+    bisac        = meta.get("bisac_category", "SEL027000")
+    categories   = BISAC_CATEGORIES.get(bisac, BISAC_CATEGORIES["SEL027000"])
+    bisac_label  = BISAC_LABELS.get(bisac, bisac)
     description_html = generate_description_html(meta)
-    keywords = meta.get("keywords", [])
-    # Pad to 7 if short
+    keywords     = meta.get("keywords", [])
     while len(keywords) < 7:
         keywords.append("")
 
-    # Find the DOCX file
-    docx_path = outputs.get("docx", "")
-    cover_path = str(output_dir / "cover.jpg") if (output_dir / "cover.jpg").exists() else "cover.jpg (generate first)"
+    docx_path  = outputs.get("docx", "")
+    cover_path = str(output_dir / "cover.jpg") if (output_dir / "cover.jpg").exists() \
+                 else "cover.jpg (run cover generator first)"
+
+    sep  = "=" * 60
+    thin = "-" * 60
+
+    def field(label, value, note=""):
+        lines = [f"  {label}"]
+        lines.append(f"  >>> {value}")
+        if note:
+            lines.append(f"  NOTE: {note}")
+        lines.append("")
+        return lines
 
     lines = [
-        f"# KDP Upload Kit: {meta['title']}",
-        f"<!-- AUTO-GENERATED: {datetime.now().isoformat(timespec='seconds')} -->",
-        f"<!-- Upload at: https://kdp.amazon.com/en_US/title-setup/kindle/new/details -->",
+        sep,
+        f"  KDP UPLOAD KIT",
+        f"  {meta.get('title', '')}",
+        sep,
+        f"  Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"  Upload at:  https://kdp.amazon.com/en_US/title-setup/kindle/new/details",
         "",
-        "Follow these steps IN ORDER. Each section maps to one KDP page.",
-        "Copy each field exactly as shown.",
+        "  Follow steps IN ORDER. Each section = one KDP page.",
+        "  Copy the text after >>> into the corresponding KDP field.",
         "",
-        "---",
+        sep,
+        "  STEP 1 OF 3 — BOOK DETAILS",
+        sep,
         "",
-        "## STEP 1 — Book Details",
+        *field("TITLE", meta.get("title", "")),
+        *field("SUBTITLE", meta.get("subtitle", "") or "(leave blank)"),
+        *field("SERIES", "(leave blank)"),
+        *field("AUTHOR (first name)", meta.get("author", "William Archer").split()[0]),
+        *field("AUTHOR (last name)",  meta.get("author", "William Archer").split()[-1]),
+        *field("CONTRIBUTOR / SECONDARY AUTHOR", "(leave blank)"),
+        thin,
+        "  DESCRIPTION",
+        "  Click the </> button in KDP's description box to switch to HTML mode.",
+        "  Then paste the block below exactly as shown:",
         "",
-        "### Title",
-        "```",
-        meta.get("title", ""),
-        "```",
-        "",
-        "### Subtitle",
-        "```",
-        meta.get("subtitle", ""),
-        "```",
-        "> Leave blank if empty.",
-        "",
-        "### Series",
-        "```",
-        "(leave blank)",
-        "```",
-        "",
-        "### Author (Primary)",
-        "```",
-        meta.get("author", "William Archer"),
-        "```",
-        "",
-        "### Contributor / Secondary Author",
-        "```",
-        "(leave blank)",
-        "```",
-        "",
-        "### Description (paste into KDP's CKEditor — use HTML source mode)",
-        "> Click the </> button in KDP's description editor to switch to HTML mode, then paste:",
-        "```html",
+        "  >>> (HTML — copy everything between the lines)",
+        thin,
         description_html,
-        "```",
+        thin,
         "",
-        "### Publishing Rights",
-        "```",
-        "I own the copyright and I hold the necessary publishing rights.",
-        "```",
-        "",
-        "### Keywords (enter one per field — 7 fields total)",
+        *field("PUBLISHING RIGHTS", "I own the copyright and I hold the necessary publishing rights."),
+        thin,
+        "  KEYWORDS  (7 separate fields — one phrase per field)",
         "",
     ]
 
     for i, kw in enumerate(keywords[:7], 1):
-        lines.append(f"**Keyword {i}:** `{kw}`")
+        lines.append(f"  Keyword {i}:  >>> {kw}")
+    lines.append("")
 
     lines += [
-        "",
-        "### Categories (choose 3 — navigate KDP's category browser)",
-        "> BISAC reference: " + bisac_label,
+        thin,
+        f"  CATEGORIES  (choose 3 — navigate KDP's tree browser)",
+        f"  BISAC reference: {bisac_label}",
         "",
     ]
     for i, cat in enumerate(categories[:3], 1):
-        lines.append(f"**Category {i}:** `{cat}`")
+        lines.append(f"  Category {i}:  >>> {cat}")
 
     lines += [
         "",
-        "### Adult Content",
-        "```",
-        "No",
-        "```",
+        *field("ADULT CONTENT", "No"),
+        sep,
+        "  STEP 2 OF 3 — CONTENT",
+        sep,
         "",
-        "---",
+        "  MANUSCRIPT FILE  (upload the DOCX — most reliable KDP format)",
+        f"  >>> {docx_path}",
         "",
-        "## STEP 2 — Content",
+        "  COVER IMAGE  (1600x2560 px JPG, under 5 MB)",
+        f"  >>> {cover_path}",
         "",
-        "### Manuscript File",
-        "> Upload the DOCX file (most reliable KDP format):",
-        "```",
-        str(docx_path),
-        "```",
+        *field("ISBN", "Get a free KDP ISBN  (recommended)"),
+        *field("PUBLICATION DATE", meta.get("date", datetime.now().strftime("%Y-%m-%d"))),
+        sep,
+        "  STEP 3 OF 3 — RIGHTS & PRICING",
+        sep,
         "",
-        "### Cover Image",
-        "> Upload the JPG cover (1600×2560 px, <5 MB):",
-        "```",
-        cover_path,
-        "```",
+        *field("TERRITORY RIGHTS", "Worldwide rights — I hold worldwide rights"),
+        *field("KDP SELECT", "Enroll in KDP Select  (enables Kindle Unlimited)"),
+        *field("PRIMARY MARKETPLACE", "Amazon.com (USD)"),
+        *field("PRICE",
+               f"${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
+               "Stay between $2.99-$9.99 for 70% royalty"),
+        *field("ROYALTY PLAN", "70%"),
+        sep,
+        "  BOOK SUMMARY",
+        sep,
         "",
-        "### ISBN",
-        "```",
-        "Get a free KDP ISBN  (recommended unless you have your own)",
-        "```",
+        f"  Title:       {meta.get('title', '')}",
+        f"  Author:      {meta.get('author', 'William Archer')}",
+        f"  Chapters:    {len(chapters)}",
+        f"  Word count:  {total_words:,}",
+        f"  Price:       ${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
+        f"  BISAC:       {bisac} ({bisac_label})",
         "",
-        "### Publication Date",
-        "```",
-        meta.get("date", datetime.now().strftime("%Y-%m-%d")),
-        "```",
+        sep,
+        "  CHECKLIST — tick off before submitting",
+        sep,
         "",
-        "---",
+        f"  [ ] Manuscript DOCX uploaded:  {docx_path}",
+        f"  [ ] Cover JPG uploaded:        {cover_path}",
+        "  [ ] Description HTML pasted (HTML source mode)",
+        "  [ ] All 7 keywords filled",
+        "  [ ] 3 categories selected",
+        "  [ ] Price set",
+        "  [ ] KDP Select enrolled",
+        "  [ ] Click Save and Continue on each step",
         "",
-        "## STEP 3 — Rights & Pricing",
-        "",
-        "### Territory Rights",
-        "```",
-        "Worldwide rights — I hold worldwide rights",
-        "```",
-        "",
-        "### KDP Select Enrollment",
-        "```",
-        "Enroll in KDP Select (recommended — enables Kindle Unlimited)",
-        "```",
-        "",
-        "### Primary Marketplace",
-        "```",
-        "Amazon.com (USD)",
-        "```",
-        "",
-        "### Price",
-        "```",
-        f"${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
-        "```",
-        "> At $2.99–$9.99 you earn 70% royalty. Below $2.99 earns only 35%.",
-        "",
-        "### Royalty Plan",
-        "```",
-        "70%",
-        "```",
-        "",
-        "---",
-        "",
-        "## Book Summary",
-        "",
-        f"- Title:        {meta.get('title', '')}",
-        f"- Author:       {meta.get('author', 'William Archer')}",
-        f"- Chapters:     {len(chapters)}",
-        f"- Word count:   {total_words:,}",
-        f"- Price:        ${meta.get('pricing', {}).get('us_price', 4.99):.2f}",
-        f"- BISAC:        {bisac} ({bisac_label})",
-        "",
-        "---",
-        "",
-        "## File Checklist",
-        "",
-        f"- [ ] Manuscript DOCX:  {docx_path}",
-        f"- [ ] Cover JPG:        {cover_path}",
-        "- [ ] Description HTML copied",
-        "- [ ] All 7 keywords filled",
-        "- [ ] 3 categories selected",
-        "- [ ] Price set",
-        "- [ ] KDP Select enrolled",
+        sep,
     ]
 
-    kit_path = output_dir / "kdp-upload-kit.md"
+    kit_path = output_dir / "kdp-upload-kit.txt"
     kit_path.write_text("\n".join(lines), encoding="utf-8")
     log(f"KDP upload kit written: {kit_path}")
 
@@ -1070,7 +1045,7 @@ def write_package_report(meta: dict, outputs: dict, chapters: list, output_dir: 
         "",
         "## Next Steps",
         "1. Generate cover: python3 cover_generator.py --book-dir <workbook>",
-        "2. Open kdp-upload-kit.md — follow the steps in order",
+        "2. Open kdp-upload-kit.txt — follow the steps in order",
         "3. Upload DOCX + cover at kdp.amazon.com",
     ]
 
@@ -1235,7 +1210,7 @@ Examples:
             log(f"  ✗ {fmt}: FAILED")
     log("")
     log("Next: Upload to Amazon KDP.")
-    log("  → Open output/kdp-upload-kit.md for a complete copy-paste guide.")
+    log("  → Open output/kdp-upload-kit.txt for a complete copy-paste guide.")
     log("  → KDP UPLOAD ORDER (most reliable first):")
     log("  1. DOCX  — most reliable, KDP converts cleanly")
     log("  2. EPUB  — run through eBook-Standardization-Toolkit first")
