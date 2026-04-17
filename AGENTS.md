@@ -1,7 +1,7 @@
 # Hermes Agent — Development Guide & Ebook Factory Operations Manual
 
-**Last Updated:** 2026-04-17 (Session 2)
-**Status:** Active — Production Ready
+**Last Updated:** 2026-04-17 (Session 3 — Pipeline Production Run)
+**Status:** Active — Production Paused After Book 4
 **Owner:** bookforge (William Archer)
 
 ---
@@ -408,10 +408,22 @@ hermes /model local-localhost:11434/qwen3.5:35b-a3b-q4_k_m
 ✓ Ollama running with qwen3.5:35b-a3b-q4_k_m (MoE, 23GB, 262k ctx)
 
 ### Known Issues / Next Session TODO
-- Analyzer + Planner not committed to GitHub yet — push in next session
-- KDP credentials set in ~/.hermes/.env — password was recently changed
+- **Books 1-3 upload kits need Qwen marketing copy regeneration** — packaged before
+  the new LLM metadata system (description_plain, description_html, gumroad_description,
+  receipt_message). Repackage each after GPU is free to get full upload kits.
+- **Book 3 chapter 2** — was missing from first package run; drafted and repackaged,
+  now complete. 48,390 words, 12 chapters. Upload kit still needs Qwen pass.
+- **Book 4 in progress** — Digital Minimalism for the Always-On Family, currently
+  writing chapters. Will complete autonomously. Pausing after this book.
+- **D2D activation** — need to pay $20 one-time fee at draft2digital.com to publish
+  more than 3 books. Currently 3 books live (Metabolic Reset, Sleep Well Tonight,
+  Low-Tech Security). 3 more pending.
+- **Cover niche mismatch fixed** — run_pipeline.py now passes --niche to cover
+  generator so text palette matches topic. Fixed for all future runs.
+- **Analyzer + Planner** (old template-based) not committed — superseded by
+  smart_planner.py and topic_pipeline.py which ARE committed.
+- KDP credentials in ~/.hermes/.env — password was recently changed
 - NVIDIA persistence mode: run `sudo nvidia-smi -pm 1` after each reboot (currently ON)
-- KDP category paths in upload kit are best-effort — verify in KDP's tree browser when uploading
 ```
 ✓ Refiner agent (refiner.py) — iterative refinement loop
 ✓ Old drafter (orchestrator.py in draft-chapter/) — superseded by new Chapter-Builder
