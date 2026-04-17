@@ -352,6 +352,24 @@ def main():
     if not run_chapter_builder(workbook_dir or Path("/tmp"), topic["chapters"], args.dry_run):
         die(f"Chapter builder critically failed — too many chapters missing.")
 
+    # ── Auto-promote drafts to w-polished ────────────────────────────────────
+    # In autonomous mode, all written chapters are promoted automatically.
+    # No placeholder text = safe to package. You can still edit w-polished/
+    # before packaging if you want to make changes.
+    if not args.dry_run and workbook_dir:
+        drafts_dir   = workbook_dir / "w-drafts"
+        polished_dir = workbook_dir / "w-polished"
+        polished_dir.mkdir(parents=True, exist_ok=True)
+        promoted = 0
+        for draft in sorted(drafts_dir.glob("chapter-*.md")):
+            dest = polished_dir / draft.name
+            if not dest.exists():
+                import shutil
+                shutil.copy2(draft, dest)
+                promoted += 1
+        if promoted:
+            log(f"Auto-promoted {promoted} chapter(s) from w-drafts/ to w-polished/")
+
     # ── Step 3: Packager ─────────────────────────────────────────────────────
     if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
         log("WARNING: Packager failed — output may be incomplete. Continuing.")
