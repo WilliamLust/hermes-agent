@@ -279,8 +279,10 @@ def run_packager(workbook_dir: Path, dry_run: bool) -> bool:
     return run_step("Packager", cmd, timeout=300)
 
 
-def run_cover_generator(workbook_dir: Path, dry_run: bool) -> bool:
+def run_cover_generator(workbook_dir: Path, dry_run: bool, niche: str = "") -> bool:
     cmd = [PYTHON, str(COVER_GENERATOR), "--book-dir", str(workbook_dir)]
+    if niche:
+        cmd += ["--niche", niche]
     if dry_run:
         log(f"[DRY RUN] Would run cover generator on {workbook_dir}")
         return True
@@ -375,7 +377,8 @@ def main():
         log("WARNING: Packager failed — output may be incomplete. Continuing.")
 
     # ── Step 4: Cover Generator ───────────────────────────────────────────────
-    if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run):
+    if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run,
+                                niche=topic.get("niche", "")):
         log("WARNING: Cover generator failed — generate cover manually.")
 
     # ── Done ──────────────────────────────────────────────────────────────────
@@ -402,7 +405,7 @@ def main():
             f"_{topic['title']}_\n\n"
             f"⏱ {mins}m {secs}s\n"
             f"📁 `{output_dir}`\n\n"
-            f"Open `kdp-upload-kit.md` to upload."
+            f"Open `kdp-upload-kit.txt` to upload."
         )
     else:
         log_section("DRY RUN COMPLETE — no files written")
