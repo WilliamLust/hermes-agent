@@ -325,7 +325,6 @@ def main():
     parser.add_argument("--niche",    type=str, default="self-help", help="Niche (with --topic)")
     parser.add_argument("--chapters", type=int, default=12,  help="Chapter count override")
     parser.add_argument("--list",     action="store_true", help="List approved queue and exit")
-    parser.add_argument("--auto",     action="store_true", help="Skip human review, auto-promote all chapters")
     args = parser.parse_args()
 
     if args.list:
@@ -383,67 +382,20 @@ def main():
     if not run_chapter_builder(workbook_dir or Path("/tmp"), topic["chapters"], args.dry_run):
         die(f"Chapter builder critically failed — too many chapters missing.")
 
-    # ── Human review gate ─────────────────────────────────────────────────────
+    # ── Auto‑promote drafts to w‑polished ───────────────────────────────────────
     if not args.dry_run and workbook_dir:
-        if args.auto:
-            # Auto‑promote all drafts
-            drafts_dir   = workbook_dir / "w-drafts"
-            polished_dir = workbook_dir / "w-polished"
-            polished_dir.mkdir(parents=True, exist_ok=True)
-            promoted = 0
-            for draft in sorted(drafts_dir.glob("chapter-*.md")):
-                dest = polished_dir / draft.name
-                if not dest.exists():
-                    import shutil
-                    shutil.copy2(draft, dest)
-                    promoted += 1
-            if promoted:
-                log(f"Auto‑promoted {promoted} chapter(s) from w‑drafts/ to w‑polished/")
-        else:
-            # Human review via Telegram
-            log_section("Human Review Gate")
-            gate_script = SKILLS_BASE / "production" / "telegram_approval.py"
-            cmd = [PYTHON, str(gate_script), str(workbook_dir), topic["title"]]
-            log(f"Running: {' '.join(shlex.quote(c) for c in cmd)}")
-            start = time.time()
-            try:
-                result = subprocess.run(cmd, timeout=87000, check=False)
-                elapsed = round(time.time() - start, 1)
-                if result.returncode == 0:
-                    log(f"  APPROVED in {elapsed}s")
-                else:
-                    log(f"  HUMAN REVIEW FAILED (exit {result.returncode}) after {elapsed}s")
-                    log("  Falling back to auto‑promotion.")
-                    # Fallback: auto‑promote all drafts
-                    drafts_dir   = workbook_dir / "w-drafts"
-                    polished_dir = workbook_dir / "w-polished"
-                    polished_dir.mkdir(parents=True, exist_ok=True)
-                    for draft in sorted(drafts_dir.glob("chapter-*.md")):
-                        dest = polished_dir / draft.name
-                        if not dest.exists():
-                            import shutil
-                            shutil.copy2(draft, dest)
-            except subprocess.TimeoutExpired:
-                log("  HUMAN REVIEW TIMEOUT after 24h — auto‑promoting.")
-                drafts_dir   = workbook_dir / "w-drafts"
-                polished_dir = workbook_dir / "w-polished"
-                polished_dir.mkdir(parents=True, exist_ok=True)
-                for draft in sorted(drafts_dir.glob("chapter-*.md")):
-                    dest = polished_dir / draft.name
-                    if not dest.exists():
-                        import shutil
-                        shutil.copy2(draft, dest)
-            except Exception as e:
-                log(f"  HUMAN REVIEW ERROR: {e}")
-                # fallback as above
-                drafts_dir   = workbook_dir / "w-drafts"
-                polished_dir = workbook_dir / "w-polished"
-                polished_dir.mkdir(parents=True, exist_ok=True)
-                for draft in sorted(drafts_dir.glob("chapter-*.md")):
-                    dest = polished_dir / draft.name
-                    if not dest.exists():
-                        import shutil
-                        shutil.copy2(draft, dest)
+        drafts_dir   = workbook_dir / "w-drafts"
+        polished_dir = workbook_dir / "w-polished"
+        polished_dir.mkdir(parents=True, exist_ok=True)
+        promoted = 0
+        for draft in sorted(drafts_dir.glob("chapter-*.md")):
+            dest = polished_dir / draft.name
+            if not dest.exists():
+                import shutil
+                shutil.copy2(draft, dest)
+                promoted += 1
+        if promoted:
+            log(f"Auto‑promoted {promoted} chapter(s) from w‑drafts/ to w‑polished/")
 
     # ── Step 3: Cover Generator ───────────────────────────────────────────────
     if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run,
