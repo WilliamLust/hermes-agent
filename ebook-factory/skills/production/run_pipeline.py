@@ -43,6 +43,8 @@ COVER_GENERATOR  = SKILLS_BASE / "cover-generator" / "cover_generator.py"
 VALIDATOR        = SKILLS_BASE / "validator" / "packaging_validator.py"
 OLLAMA_CLIENT    = SKILLS_BASE / "ollama_client.py"
 
+PLANNER_SCRIPT   = HERMES_HOME / "hermes_skills" / "planner" / "topic_pipeline.py"
+
 # Pipeline concurrency lock
 LOCK_FILE        = HERMES_HOME / "ebook-factory" / ".pipeline.lock"
 
@@ -180,11 +182,28 @@ def mark_done(topic: dict):
     if not APPROVED_TOPICS.exists():
         return
     content = APPROVED_TOPICS.read_text(encoding="utf-8")
-    # Add status: DONE to the raw block
-    updated_block = topic["raw"] + "\nstatus: DONE"
+    # Replace status: RUNNING with status: DONE (or append DONE if no status)
+    if "status: RUNNING" in topic.get("raw", ""):
+        updated_block = topic["raw"].replace("status: RUNNING", "status: DONE")
+    else:
+        updated_block = topic["raw"] + "\nstatus: DONE"
     content = content.replace(topic["raw"], updated_block, 1)
     APPROVED_TOPICS.write_text(content, encoding="utf-8")
     log(f"Marked DONE in queue: {topic['title']}")
+
+    # R1: Auto-trigger planner when queue drops below 2
+    remaining = parse_queue(APPROVED_TOPICS)
+    if len(remaining) < 2:
+        log(f"Queue low ({len(remaining)} topics) — triggering topic planner...")
+        try:
+            subprocess.Popen(
+                [PYTHON, str(PLANNER_SCRIPT)],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            log("Planner launched in background")
+        except Exception as e:
+            log(f"Could not launch planner: {e}")
 
 
 def append_to_produced(topic: dict, workbook_dir: Path):
@@ -202,6 +221,32 @@ def append_to_produced(topic: dict, workbook_dir: Path):
     with open(PRODUCED_TOPICS, "a", encoding="utf-8") as f:
         f.write(entry)
     log(f"Appended to produced log: {topic['title']}")
+
+
+def mark_running(topic: dict):
+    """Mark a topic as RUNNING in approved_topics.md (crash-safe tracking)."""
+    if not APPROVED_TOPICS.exists():
+        return
+    content = APPROVED_TOPICS.read_text(encoding="utf-8")
+    # Add status: RUNNING to the raw block
+    if "status:" not in topic.get("raw", ""):
+        updated_block = topic["raw"] + "\nstatus: RUNNING"
+        content = content.replace(topic["raw"], updated_block, 1)
+        APPROVED_TOPICS.write_text(content, encoding="utf-8")
+        log(f"Marked RUNNING in queue: {topic['title']}")
+
+
+def recover_orphans():
+    """On startup, reset any RUNNING topics whose pipeline crashed."""
+    if not APPROVED_TOPICS.exists():
+        return
+    content = APPROVED_TOPICS.read_text(encoding="utf-8")
+    if "status: RUNNING" not in content:
+        return
+    # Reset all RUNNING back to PENDING (no status line)
+    content = content.replace("\nstatus: RUNNING", "")
+    APPROVED_TOPICS.write_text(content, encoding="utf-8")
+    log("Recovered orphaned RUNNING topics — reset to PENDING")
 
 
 def list_queue():
@@ -287,6 +332,10 @@ def run_chapter_builder(workbook_dir: Path, num_chapters: int, dry_run: bool) ->
         log(f"  Starting chapter {ch}...")
         p = subprocess.Popen(cmd)
         procs.append((ch, p))
+        # R10: Stagger launches to reduce GPU memory pressure spikes
+        # Ollama handles queuing but 12 simultaneous requests cause model thrashing
+        if ch < num_chapters:
+            time.sleep(15)
 
     # Wait for all
     failed = []
@@ -381,6 +430,9 @@ def main():
     # Acquire pipeline lock — prevents dual GPU usage
     acquire_pipeline_lock()
 
+    # R6: Recover orphaned RUNNING topics from crashed pipeline runs
+    recover_orphans()
+
     # Resolve topic
     if args.topic:
         topic = {
@@ -406,6 +458,9 @@ def main():
     log(f"Niche: {topic['niche']} | Chapters: {topic['chapters']}")
     if topic.get("notes"):
         log(f"Notes: {topic['notes']}")
+
+    # R6: Mark topic as RUNNING (crash-safe — orphan recovery on restart)
+    mark_running(topic)
 
     start_time = time.time()
     notify(

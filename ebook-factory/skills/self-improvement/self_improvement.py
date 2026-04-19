@@ -214,47 +214,56 @@ def scrape_kdp_dashboard_bsr(asins: list[str]) -> dict[str, dict]:
     """
     Scrape current BSR for each published ASIN from Amazon product pages.
     Returns dict: asin → {kindle_bsr, book_bsr, rating, review_count, updated}
-    Uses Firecrawl (1 credit per ASIN).
+
+    Tier 1: Plain requests with browser-like headers (FREE, ~1.5s/page, works)
+    Tier 2: Firecrawl API (costs credits, last resort)
     """
     results = {}
-    if not FIRECRAWL_KEY:
-        log("No Firecrawl key — skipping live BSR scrape", "Harvester")
-        return results
+
+    # ── Tier 1: Plain requests ──────────────────────────────────────────────
+    BSR_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
 
     for asin in asins:
         try:
             log(f"  Scraping BSR for ASIN {asin}...", "Harvester")
-            resp = requests.post(
-                "https://api.firecrawl.dev/v1/scrape",
-                headers={"Authorization": f"Bearer {FIRECRAWL_KEY}"},
-                json={
-                    "url": f"https://www.amazon.com/dp/{asin}/",
-                    "formats": ["markdown"],
-                    "onlyMainContent": True,
-                    "includeTags": ["h1","h2","h3","p","li","ul","span","div"],
-                    "timeout": 30000,
-                },
-                timeout=40,
+            resp = requests.get(
+                f"https://www.amazon.com/dp/{asin}/",
+                headers=BSR_HEADERS,
+                timeout=15,
             )
+            if resp.status_code == 404:
+                log(f"    ASIN {asin} not found (404) — product may be delisted", "Harvester")
+                continue
             if resp.status_code != 200:
                 log(f"    Failed: HTTP {resp.status_code}", "Harvester")
                 continue
 
-            raw = resp.json().get("data", {}).get("markdown", "")
+            html = resp.text
             bsr_data = {"asin": asin, "updated": datetime.now().isoformat()}
 
             # Kindle BSR
-            km = re.search(r"#([\d,]+)\s+in\s+Kindle\s+Store", raw, re.IGNORECASE)
+            km = re.search(r"#([\d,]+)\s+in\s+Kindle\s+Store", html, re.IGNORECASE)
             if km:
                 bsr_data["kindle_bsr"] = int(km.group(1).replace(",", ""))
 
             # Books BSR
-            bm = re.search(r"#([\d,]+)\s+in\s+Books\b", raw, re.IGNORECASE)
+            bm = re.search(r"#([\d,]+)\s+in\s+Books\b", html, re.IGNORECASE)
             if bm:
                 bsr_data["book_bsr"] = int(bm.group(1).replace(",", ""))
 
             # Rating
-            rm = re.search(r"(\d+\.\d+)\s+out of\s+5\s+stars?", raw, re.IGNORECASE)
+            rm = re.search(r"(\d+\.\d+)\s+out\s+of\s+5\s+stars?", html, re.IGNORECASE)
             if rm:
                 try:
                     bsr_data["rating"] = float(rm.group(1))
@@ -262,7 +271,7 @@ def scrape_kdp_dashboard_bsr(asins: list[str]) -> dict[str, dict]:
                     pass
 
             # Reviews
-            rev_m = re.search(r"([\d,]+)\s+ratings?", raw, re.IGNORECASE)
+            rev_m = re.search(r"([\d,]+)\s+ratings?", html, re.IGNORECASE)
             if rev_m:
                 try:
                     bsr_data["review_count"] = int(rev_m.group(1).replace(",", ""))
@@ -270,11 +279,53 @@ def scrape_kdp_dashboard_bsr(asins: list[str]) -> dict[str, dict]:
                     pass
 
             results[asin] = bsr_data
-            log(f"    BSR: #{bsr_data.get('kindle_bsr','?')} Kindle | {bsr_data.get('review_count','?')} reviews", "Harvester")
-            time.sleep(1.0)  # rate limit
+            log(f"    BSR: #{bsr_data.get('kindle_bsr','?')} Kindle | "
+                f"{bsr_data.get('review_count','?')} reviews | "
+                f"{bsr_data.get('rating','?')} stars", "Harvester")
+            time.sleep(0.5)  # gentle rate limit
 
         except Exception as e:
             log(f"    Error scraping {asin}: {e}", "Harvester")
+
+    # ── Tier 2: Firecrawl fallback (only if Tier 1 got nothing) ─────────────
+    if not results and asins and FIRECRAWL_KEY:
+        log("Tier 1 (plain requests) failed for all ASINs — trying Firecrawl fallback", "Harvester")
+        for asin in asins:
+            try:
+                resp = requests.post(
+                    "https://api.firecrawl.dev/v1/scrape",
+                    headers={"Authorization": f"Bearer {FIRECRAWL_KEY}"},
+                    json={
+                        "url": f"https://www.amazon.com/dp/{asin}/",
+                        "formats": ["markdown"],
+                        "onlyMainContent": True,
+                        "timeout": 30000,
+                    },
+                    timeout=40,
+                )
+                if resp.status_code != 200:
+                    log(f"    Firecrawl failed: HTTP {resp.status_code}", "Harvester")
+                    continue
+                raw = resp.json().get("data", {}).get("markdown", "")
+                bsr_data = {"asin": asin, "updated": datetime.now().isoformat()}
+                km = re.search(r"#([\d,]+)\s+in\s+Kindle\s+Store", raw, re.IGNORECASE)
+                if km:
+                    bsr_data["kindle_bsr"] = int(km.group(1).replace(",", ""))
+                bm = re.search(r"#([\d,]+)\s+in\s+Books\b", raw, re.IGNORECASE)
+                if bm:
+                    bsr_data["book_bsr"] = int(bm.group(1).replace(",", ""))
+                rm = re.search(r"(\d+\.\d+)\s+out\s+of\s+5\s+stars?", raw, re.IGNORECASE)
+                if rm:
+                    try: bsr_data["rating"] = float(rm.group(1))
+                    except ValueError: pass
+                rev_m = re.search(r"([\d,]+)\s+ratings?", raw, re.IGNORECASE)
+                if rev_m:
+                    try: bsr_data["review_count"] = int(rev_m.group(1).replace(",", ""))
+                    except ValueError: pass
+                results[asin] = bsr_data
+                time.sleep(1.0)
+            except Exception as e:
+                log(f"    Firecrawl error for {asin}: {e}", "Harvester")
 
     return results
 
@@ -374,6 +425,51 @@ def harvest_performance(dry_run: bool = False) -> dict:
         log(f"Appended harvest entry to LEARNING.md", "Harvester")
 
     return {"books": len(updates), "live_bsr": len(live_bsr), "updates": updates}
+
+
+def rotate_learning_md(max_books: int = 20, dry_run: bool = False):
+    """Keep only the last max_books original entries in LEARNING.md.
+    
+    Older entries are archived to LEARNING_archive.md. Harvester snapshots
+    (dated performance tables) are always kept — only original book entries
+    are rotated. This prevents the file from growing unbounded and hitting
+    the planner's 8000-char cap.
+    """
+    if not LEARNING_MD.exists():
+        return
+    
+    content = LEARNING_MD.read_text(encoding="utf-8", errors="replace")
+    
+    # Split into book entries (## [date] Book: ...) and harvester snapshots (## [date] Harvester: ...)
+    # Keep all harvester snapshots, only rotate book entries
+    book_entries = re.split(r"(?=^## \[\d{4}-\d{2}-\d{2}\] Book:)", content, flags=re.MULTILINE)
+    
+    # First element is the header/preamble
+    preamble = book_entries[0] if book_entries else ""
+    entries = book_entries[1:] if len(book_entries) > 1 else []
+    
+    if len(entries) <= max_books:
+        log(f"LEARNING.md has {len(entries)} book entries — no rotation needed", "Harvester")
+        return
+    
+    keep = entries[-max_books:]
+    archive = entries[:-max_books]
+    
+    if dry_run:
+        log(f"DRY RUN — would archive {len(archive)} old entries, keep {len(keep)}", "Harvester")
+        return
+    
+    # Write archive file
+    archive_path = LEARNING_MD.with_suffix(".archive.md")
+    with open(archive_path, "a", encoding="utf-8") as f:
+        for entry in archive:
+            f.write(entry)
+    log(f"Archived {len(archive)} old entries to {archive_path.name}", "Harvester")
+    
+    # Rewrite LEARNING.md with preamble + kept entries
+    new_content = preamble + "".join(keep)
+    LEARNING_MD.write_text(new_content, encoding="utf-8")
+    log(f"LEARNING.md rotated: {len(entries)} → {len(keep)} book entries", "Harvester")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1406,6 +1502,8 @@ def main():
     # ── Module 1: Harvest ─────────────────────────────────────────────────────
     if run_harvest:
         harvest_data = harvest_performance(dry_run=args.dry_run)
+        # R2: Rotate LEARNING.md to prevent unbounded growth
+        rotate_learning_md(max_books=20, dry_run=args.dry_run)
 
     # ── Module 2: Analyze ─────────────────────────────────────────────────────
     if run_analyze:
