@@ -44,7 +44,7 @@ STYLE_GUIDE = Path.home() / "books" / "factory" / "style-guide.md"
 DEFAULT_AUTHOR = "William Archer"
 DEFAULT_LANGUAGE = "en"
 
-OLLAMA_URL     = "http://localhost:11434/api/chat"
+OLLAMA_URL     = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434") + "/api/chat"
 METADATA_MODEL = "qwen3.5:27b-16k"   # Description + subtitle generation
 
 
@@ -227,45 +227,40 @@ Now write all marketing copy for "{title}".
 Output ONLY valid JSON with all 6 keys."""
 
     log("Generating full marketing copy via Qwen 27B...")
+    # Use shared ollama_client with retry
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from ollama_client import ollama_call_with_retry
+
+    raw = ollama_call_with_retry(
+        user, system, METADATA_MODEL,
+        max_retries=2,
+        num_predict=1800,
+        temperature=0.7,
+        timeout=300,
+    )
+    if raw is None:
+        log("WARNING: LLM did not return metadata — using fallback")
+        return {}
+    raw = re.sub(r"<think/>.*?</think/>", "", raw, flags=re.DOTALL).strip()
+    json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not json_match:
+        log("WARNING: LLM did not return JSON for metadata — using fallback")
+        return {}
     try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": METADATA_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user},
-                ],
-                "stream": False,
-                "think": False,
-                "options": {"temperature": 0.7, "num_predict": 1800},
-            },
-            timeout=300,
-        )
-        resp.raise_for_status()
-        raw = resp.json()["message"]["content"].strip()
-        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not json_match:
-            log("WARNING: LLM did not return JSON for metadata — using fallback")
-            return {}
         data = json.loads(json_match.group(0))
-        # Validate all keys present
-        required = ["subtitle", "description_plain", "description_html",
-                    "gumroad_description", "receipt_message", "keywords"]
-        for key in required:
-            if key not in data:
-                data[key] = ""
-        log(f"  Subtitle: {data.get('subtitle', '')}")
-        log(f"  Description: {str(data.get('description_plain',''))[:80]}...")
-        log(f"  Keywords: {data.get('keywords', [])}")
-        return data
-    except requests.exceptions.ConnectionError:
-        log("WARNING: Ollama not reachable — metadata LLM skipped")
+    except json.JSONDecodeError:
+        log("WARNING: LLM returned invalid JSON for metadata — using fallback")
         return {}
-    except Exception as e:
-        log(f"WARNING: Metadata LLM failed: {e}")
-        return {}
+    # Validate all keys present
+    required = ["subtitle", "description_plain", "description_html",
+                "gumroad_description", "receipt_message", "keywords"]
+    for key in required:
+        if key not in data:
+            data[key] = ""
+    log(f"  Subtitle: {data.get('subtitle', '')}")
+    log(f"  Description: {str(data.get('description_plain',''))[:80]}...")
+    log(f"  Keywords: {data.get('keywords', [])}")
+    return data
 
 
 # ============================================================================
@@ -836,7 +831,7 @@ def build_kdp_metadata(meta: dict, chapters: list, output_dir: Path) -> Path:
             "print_replica": False,
         },
         "pricing": {
-            "us_price": 3.99,
+            "us_price": 9.99,
             "royalty_plan": "70%",
         },
         "chapter_count": len(chapters),
@@ -988,7 +983,7 @@ def write_upload_kit(meta: dict, outputs: dict, chapters: list, output_dir: Path
     title    = meta.get("title", "")
     subtitle = meta.get("subtitle", "")
     author   = meta.get("author", "William Archer")
-    price    = meta.get("pricing", {}).get("us_price", 4.99)
+    price    = meta.get("pricing", {}).get("us_price", 9.99)
 
     sep  = "=" * 60
     thin = "-" * 60

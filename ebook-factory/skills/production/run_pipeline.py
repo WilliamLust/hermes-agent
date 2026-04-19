@@ -41,6 +41,14 @@ CHAPTER_BUILDER  = SKILLS_BASE / "chapter-builder" / "chapter_builder.py"
 PACKAGER         = SKILLS_BASE / "packager" / "packager.py"
 COVER_GENERATOR  = SKILLS_BASE / "cover-generator" / "cover_generator.py"
 VALIDATOR        = SKILLS_BASE / "validator" / "packaging_validator.py"
+OLLAMA_CLIENT    = SKILLS_BASE / "ollama_client.py"
+
+# Pipeline concurrency lock
+LOCK_FILE        = HERMES_HOME / "ebook-factory" / ".pipeline.lock"
+
+# Ollama configuration for model management
+OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OUTLINE_MODEL    = "qwen3.5:35b-a3b-q4_k_m"
 
 VENV_PYTHON      = Path.home() / "hermes-agent" / "venv" / "bin" / "python3"
 PYTHON           = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
@@ -87,7 +95,44 @@ def log_section(title):
 def die(msg):
     print(f"\n[ERROR] {msg}", file=sys.stderr, flush=True)
     notify(f"❌ *Pipeline ERROR*\n{msg}")
+    release_pipeline_lock()
     sys.exit(1)
+
+# ── Pipeline Lock ──────────────────────────────────────────────────────────────
+
+def acquire_pipeline_lock():
+    """Prevent concurrent pipeline runs on the same GPU. Dies if already running."""
+    if LOCK_FILE.exists():
+        try:
+            pid = int(LOCK_FILE.read_text().strip())
+            os.kill(pid, 0)  # signal 0 = check existence only
+            die(
+                f"Pipeline already running (PID {pid}).\n"
+                f"If stale, delete {LOCK_FILE} and retry."
+            )
+        except (ProcessLookupError, ValueError):
+            log(f"Stale lock from dead PID {LOCK_FILE.read_text().strip()}, removing")
+            LOCK_FILE.unlink()
+    LOCK_FILE.write_text(str(os.getpid()))
+    log(f"Acquired pipeline lock (PID {os.getpid()})")
+
+def release_pipeline_lock():
+    """Release the pipeline lock. Safe to call multiple times."""
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+# ── Model Management ───────────────────────────────────────────────────────────
+
+def unload_ollama_model(model_name: str):
+    """Ask Ollama to unload a model from VRAM to free memory for the next phase."""
+    try:
+        sys.path.insert(0, str(SKILLS_BASE))
+        from ollama_client import unload_model
+        unload_model(model_name)
+    except Exception as e:
+        log(f"Model unload notice: {e} (non-critical — Ollama will evict on its own)")
 
 # ── Queue management ───────────────────────────────────────────────────────────
 
@@ -333,6 +378,9 @@ def main():
 
     log_section("Ebook Factory — Production Orchestrator")
 
+    # Acquire pipeline lock — prevents dual GPU usage
+    acquire_pipeline_lock()
+
     # Resolve topic
     if args.topic:
         topic = {
@@ -369,6 +417,10 @@ def main():
     # ── Step 1: Outliner ──────────────────────────────────────────────────────
     if not run_outliner(topic, args.dry_run):
         die(f"Outliner failed for: {topic['title']}")
+
+    # ── Free VRAM: unload 35B model before chapter building ──────────────────
+    if not args.dry_run:
+        unload_ollama_model(OUTLINE_MODEL)
 
     # ── Locate workbook ───────────────────────────────────────────────────────
     workbook_dir = None
@@ -412,6 +464,9 @@ def main():
     # ── Done ──────────────────────────────────────────────────────────────────
     elapsed = round(time.time() - start_time)
     mins, secs = divmod(elapsed, 60)
+
+    # Always release lock on completion
+    release_pipeline_lock()
 
     if not args.dry_run and workbook_dir:
         mark_done(topic)

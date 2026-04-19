@@ -342,8 +342,7 @@ def build_refinement_prompt(original: str, issues: list[str], chapter: dict) -> 
         # Word count only: expand specific sections rather than full rewrite
         current_wc = len(original.split())
         needed = chapter['word_count'] - current_wc
-        return f"""/no_think
-The chapter below is {current_wc} words but needs {chapter['word_count']} words (±10%).
+        return f"""The chapter below is {current_wc} words but needs {chapter['word_count']} words (±10%).
 Add approximately {needed} words by expanding the concrete examples and case studies with more specific detail.
 Do NOT rewrite the whole chapter. Return the complete improved chapter.
 
@@ -355,8 +354,7 @@ CURRENT CHAPTER:
 Return the expanded chapter now. Write approximately {chapter['word_count']} words total."""
 
     # Structural issues: targeted rewrite
-    return f"""/no_think
-Fix these specific issues in the chapter below:
+    return f"""Fix these specific issues in the chapter below:
 {issues_text}
 
 CHAPTER:
@@ -369,51 +367,30 @@ Write ONLY the improved chapter."""
 
 
 # ============================================================================
-# OLLAMA API
+# OLLAMA API (via shared ollama_client with retry + think:false)
 # ============================================================================
+
+# Import shared Ollama client
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from ollama_client import ollama_call_with_retry
 
 def call_ollama(prompt: str, model: str, system: str = SYSTEM_PROMPT,
                 num_predict: int = 6000) -> str:
-    """Call Ollama API directly. Returns the response text."""
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "think": False,
-        "options": {
-            "temperature": 0.7,
-            "num_predict": num_predict,
-        },
-    }
-
+    """Call Ollama API with retry. Returns the response text (empty string on failure)."""
     log(f"Calling Ollama ({model})... (may take 5-15 min)")
-    try:
-        resp = requests.post(API_CHAT, json=payload, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        content = data.get("message", {}).get("content", "")
-        if not content:
-            # Check if thinking tokens were exhausted (done_reason=length)
-            if data.get("done_reason") == "length":
-                log("WARNING: Model used all tokens on thinking — no output. Using prior content.")
-                return ""   # caller will handle empty gracefully
-            log(f"WARNING: Ollama returned empty content. done_reason={data.get('done_reason')}")
-            return ""
-        word_count = len(content.split())
-        log(f"Received {word_count} words from Ollama")
-        return content
-    except requests.exceptions.ConnectionError:
-        error_exit(f"Cannot connect to Ollama at {OLLAMA_BASE}. Is it running?\n  Try: ollama serve")
-    except requests.exceptions.Timeout:
-        error_exit(f"Ollama timed out after {REQUEST_TIMEOUT//60} minutes")
-    except requests.exceptions.HTTPError as e:
-        error_exit(f"Ollama HTTP error: {e}\n  Response: {resp.text[:500]}")
-    except Exception as e:
-        error_exit(f"Ollama call failed: {e}")
-
+    result = ollama_call_with_retry(
+        prompt, system, model,
+        max_retries=3,
+        num_predict=num_predict,
+        temperature=0.7,
+        timeout=REQUEST_TIMEOUT,
+    )
+    if result is None:
+        log("WARNING: Ollama call failed after all retries — returning empty string")
+        return ""
+    word_count = len(result.split())
+    log(f"Received {word_count} words from Ollama")
+    return result
 
 # ============================================================================
 # VALIDATION

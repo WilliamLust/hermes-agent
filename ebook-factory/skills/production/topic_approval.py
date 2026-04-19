@@ -15,9 +15,11 @@ Usage:
   python3 topic_approval.py --list-queue        # Show approved queue
 
 Telegram reply format:
-  1, 2, 3     → Pick topic by number (from the list sent)
-  run         → Start pipeline on last approved topic
+  1, 2, 3     → Pick topic by number — auto-queues AND auto-starts the pipeline
   new topics  → Re-send the topic list (re-runs planner first)
+
+Auto-start: When a topic is selected (by number), the pipeline starts automatically.
+No separate "run" command needed. Selection = execution.
 """
 
 import argparse
@@ -275,8 +277,7 @@ def cmd_send(topic_plan_path: Path = None):
     # Build message
     header = (
         "📚 *Next Book Candidates*\n\n"
-        "Reply with a number to approve that topic.\n"
-        "Reply `run` to start the pipeline.\n"
+        "Reply with a number to approve and auto-start that topic.\n"
     )
     tg_send(header)
     time.sleep(0.5)
@@ -312,7 +313,7 @@ def cmd_listen(timeout: int = 3600, auto_start: bool = False):
     deadline = time.time() + timeout
     approved_topic = None
 
-    tg_send("👂 Waiting for your pick. Reply with a number, or `run` to start the pipeline.")
+    tg_send("👂 Waiting for your pick. Reply with a number to approve and auto-start.")
 
     while time.time() < deadline:
         updates = tg_get_updates(offset=last_update_id + 1)
@@ -348,18 +349,30 @@ def cmd_listen(timeout: int = 3600, auto_start: bool = False):
                     }
                     append_to_approved(approved_topic)
 
+                    # Auto-start the pipeline immediately on selection
                     tg_send(
                         f"✅ *Approved: {selected['title']}*\n"
                         f"Niche: {niche}\n\n"
-                        f"Added to queue. Reply `run` to start the pipeline."
+                        f"Starting pipeline automatically..."
                     )
+                    state["last_update_id"] = last_update_id
+                    save_state(state)
+
+                    cmd = [PYTHON, str(PIPELINE_SCRIPT)]
+                    log(f"Auto-starting pipeline: {' '.join(cmd)}")
+                    try:
+                        subprocess.Popen(cmd, start_new_session=True)
+                        tg_send("🚀 Pipeline running. I'll notify you when it's done.")
+                    except Exception as e:
+                        tg_send(f"❌ Pipeline launch failed: {e}")
+                    return
                 else:
                     tg_send(
                         f"⚠️ Topic {pick} not found. "
                         f"Available: {', '.join(str(t['num']) for t in topics_sent)}"
                     )
 
-            # "run" command — start pipeline
+            # "run" command — start pipeline (kept for manual use, but auto-start is default)
             elif text.lower().strip() == "run":
                 tg_send("🚀 Starting pipeline...")
                 state["last_update_id"] = last_update_id
@@ -451,7 +464,7 @@ def main():
     parser.add_argument("--auto-pick",   type=int, metavar="N",
                         help="Skip Telegram, directly approve topic N from plan")
     parser.add_argument("--no-start",    action="store_true",
-                        help="With --auto-pick: add to queue but don't start pipeline")
+                        help="With --auto-pick: add to queue but don't auto-start pipeline (default: auto-starts)")
     parser.add_argument("--status",      action="store_true", help="Show topic plan and queue")
     parser.add_argument("--timeout",     type=int, default=3600,
                         help="Listener timeout in seconds (default: 3600)")
