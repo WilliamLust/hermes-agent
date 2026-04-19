@@ -155,26 +155,26 @@ def parse_learning_md_books() -> list[dict]:
         if asin_m:
             book["asin"] = asin_m.group(1)
 
-        # Royalty
-        royalty_m = re.search(r"Royalty:\s*\$?([\d,\.]+)", block)
+        # Royalty — matches "Royalty:** $2,760.00" or "Royalty: $2760"
+        royalty_m = re.search(r"Royalty:\*{0,2}\s*\$?([\d,\.]+)", block)
         if royalty_m:
             try:
                 book["royalty"] = float(royalty_m.group(1).replace(",", ""))
             except ValueError:
                 book["royalty"] = 0.0
 
-        # Units sold
-        units_m = re.search(r"Units Sold:\s*(\d+)", block)
+        # Units sold — matches "Units Sold:** 800" or "Units Sold: 800"
+        units_m = re.search(r"Units Sold:\*{0,2}\s*(\d+)", block)
         if units_m:
             book["units"] = int(units_m.group(1))
 
-        # KENP pages
-        kenp_m = re.search(r"KENP Pages:\s*([\d,]+)", block)
+        # KENP pages — matches "KENP Pages:** 28,000" or "KENP Pages: 28000"
+        kenp_m = re.search(r"KENP Pages:\*{0,2}\s*([\d,]+)", block)
         if kenp_m:
             book["kenp"] = int(kenp_m.group(1).replace(",", ""))
 
-        # Price
-        price_m = re.search(r"Price:\s*\$?([\d\.]+)", block)
+        # Price — matches "Price:** $4.99" or "Price: $4.99"
+        price_m = re.search(r"Price:\*{0,2}\s*\$?([\d\.]+)", block)
         if price_m:
             try:
                 book["price"] = float(price_m.group(1))
@@ -182,12 +182,12 @@ def parse_learning_md_books() -> list[dict]:
                 book["price"] = 4.99
 
         # Niche category — strip markdown bold markers
-        niche_m = re.search(r"Niche Category:\s*(.+)", block)
+        niche_m = re.search(r"Niche Category:\*{0,2}\s*(.+)", block)
         if niche_m:
             book["niche"] = re.sub(r"\*+", "", niche_m.group(1)).strip()
 
-        # Niche score
-        score_m = re.search(r"Niche Score:\s*([\d\.]+)", block)
+        # Niche score — matches "Niche Score:** 7.80/10" or "Niche Score: 7.80"
+        score_m = re.search(r"Niche Score:\*{0,2}\s*([\d\.]+)", block)
         if score_m:
             try:
                 book["niche_score"] = float(score_m.group(1))
