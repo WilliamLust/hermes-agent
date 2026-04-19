@@ -40,6 +40,7 @@ OUTLINER         = HERMES_HOME / "skills" / "ebook-factory" / "skills" / "outlin
 CHAPTER_BUILDER  = SKILLS_BASE / "chapter-builder" / "chapter_builder.py"
 PACKAGER         = SKILLS_BASE / "packager" / "packager.py"
 COVER_GENERATOR  = SKILLS_BASE / "cover-generator" / "cover_generator.py"
+VALIDATOR        = SKILLS_BASE / "validator" / "packaging_validator.py"
 
 VENV_PYTHON      = Path.home() / "hermes-agent" / "venv" / "bin" / "python3"
 PYTHON           = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
@@ -288,6 +289,33 @@ def run_cover_generator(workbook_dir: Path, dry_run: bool, niche: str = "") -> b
         return True
     return run_step("Cover Generator", cmd, timeout=180)
 
+def run_validator(workbook_dir: Path, dry_run: bool) -> bool:
+    cmd = [PYTHON, str(VALIDATOR), "--book-dir", str(workbook_dir)]
+    if dry_run:
+        log(f"[DRY RUN] Would run validator on {workbook_dir}")
+        return True
+    log_section("Validator")
+    log(f"Running: {' '.join(shlex.quote(c) for c in cmd)}")
+    start = time.time()
+    try:
+        result = subprocess.run(cmd, timeout=300, check=False)
+        elapsed = round(time.time() - start, 1)
+        if result.returncode == 0:
+            log(f"  PASS in {elapsed}s")
+            return True
+        elif result.returncode == 1:
+            log(f"  WARN (validation warnings) after {elapsed}s")
+            return True  # continue pipeline
+        else:
+            log(f"  FAIL (critical validation issues) after {elapsed}s")
+            return False
+    except subprocess.TimeoutExpired:
+        log(f"  TIMEOUT after 300s")
+        return False
+    except Exception as e:
+        log(f"  ERROR: {e}")
+        return False
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -372,15 +400,18 @@ def main():
         if promoted:
             log(f"Auto-promoted {promoted} chapter(s) from w-drafts/ to w-polished/")
 
-    # ── Step 3: Packager ─────────────────────────────────────────────────────
-    if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
-        log("WARNING: Packager failed — output may be incomplete. Continuing.")
-
-    # ── Step 4: Cover Generator ───────────────────────────────────────────────
+    # ── Step 3: Cover Generator ───────────────────────────────────────────────
     if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run,
                                 niche=topic.get("niche", "")):
         log("WARNING: Cover generator failed — generate cover manually.")
 
+    # ── Step 4: Packager ─────────────────────────────────────────────────────
+    if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
+        log("WARNING: Packager failed — output may be incomplete. Continuing.")
+
+    # ── Step 5: Validator ───────────────────────────────────────────────
+    if not run_validator(workbook_dir or Path("/tmp"), args.dry_run):
+        log("WARNING: Validator failed — output may have issues. Continuing.")
     # ── Done ──────────────────────────────────────────────────────────────────
     elapsed = round(time.time() - start_time)
     mins, secs = divmod(elapsed, 60)

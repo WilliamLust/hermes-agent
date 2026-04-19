@@ -654,79 +654,90 @@ def build_epub(meta: dict, chapters: list, output_dir: Path) -> Path:
 
     epub_path = output_dir / f"{meta['slug']}.epub"
 
-    # Try ebooklib first
-    try:
-        import ebooklib
-        from ebooklib import epub
+    # Prefer Calibre ebook-convert if available (produces more reliable EPUB)
+    ebook_convert = shutil.which("ebook-convert")
+    if ebook_convert:
+        log("Using Calibre ebook-convert for EPUB generation (preferred)")
+        # Skip ebooklib entirely, go directly to calibre conversion
+        pass
+    else:
+        # Try ebooklib first (only if Calibre not available)
+        try:
+            import ebooklib
+            from ebooklib import epub
 
-        book = epub.EpubBook()
-        book.set_identifier(f"{meta['slug']}-{meta['date']}")
-        book.set_title(meta["title"])
-        book.set_language(meta["language"])
-        book.add_author(meta["author"])
+            book = epub.EpubBook()
+            book.set_identifier(f"{meta['slug']}-{meta['date']}")
+            book.set_title(meta["title"])
+            book.set_language(meta["language"])
+            book.add_author(meta["author"])
 
-        # Add CSS
-        css = epub.EpubItem(uid="style_nav", file_name="style/main.css",
-                           media_type="text/css", content=CSS)
-        book.add_item(css)
+            # Add CSS
+            css = epub.EpubItem(uid="style_nav", file_name="style/main.css",
+                               media_type="text/css", content=CSS)
+            book.add_item(css)
 
-        # Add chapters
-        epub_chapters = []
-        for ch in chapters:
-            chapter_id = f"chapter-{ch['number']:02d}"
-            html_content = md_to_html(ch["content"], chapter_id)
+            # Add chapters
+            epub_chapters = []
+            for ch in chapters:
+                chapter_id = f"chapter-{ch['number']:02d}"
+                html_content = md_to_html(ch["content"], chapter_id)
 
-            # Ensure content is non-empty for ebooklib
-            if not html_content.strip():
-                html_content = f"<p>{ch['title']}</p>"
+                # Ensure content is non-empty for ebooklib
+                if not html_content.strip():
+                    html_content = f"<p>{ch['title']}</p>"
 
-            c = epub.EpubHtml(
-                title=ch["title"],
-                file_name=f"{chapter_id}.xhtml",
-                lang=meta["language"],
-            )
-            c.content = f"""<?xml version='1.0' encoding='utf-8'?>
+                c = epub.EpubHtml(
+                    title=ch["title"],
+                    file_name=f"{chapter_id}.xhtml",
+                    lang=meta["language"],
+                )
+                c.content = f"""<?xml version='1.0' encoding='utf-8'?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>{ch['title']}</title>
 <link rel="stylesheet" type="text/css" href="style/main.css"/>
 </head>
 <body>{html_content}</body></html>"""
-            c.add_item(css)
-            book.add_item(c)
-            epub_chapters.append(c)
+                c.add_item(css)
+                book.add_item(c)
+                epub_chapters.append(c)
 
-        book.toc = tuple(epub_chapters)
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = ["nav"] + epub_chapters
+            book.toc = tuple(epub_chapters)
+            book.add_item(epub.EpubNcx())
+            book.add_item(epub.EpubNav())
+            book.spine = ["nav"] + epub_chapters
 
-        epub.write_epub(str(epub_path), book)
-        log(f"EPUB built via ebooklib: {epub_path}")
-        return epub_path
+            epub.write_epub(str(epub_path), book)
+            log(f"EPUB built via ebooklib: {epub_path}")
+            return epub_path
 
-    except ImportError:
-        log("ebooklib not found — trying ebook-convert (Calibre)")
-    except Exception as e:
-        log(f"ebooklib failed ({e}) — falling back to Calibre")
+        except ImportError:
+            log("ebooklib not found — cannot generate EPUB (no Calibre fallback)")
+            return None
+        except Exception as e:
+            log(f"ebooklib failed ({e}) — cannot generate EPUB")
+            return None
 
-    # Fallback: Calibre ebook-convert
+    # Calibre conversion path (if ebook_convert exists)
     html_path = output_dir / f"{meta['slug']}.html"
     if not html_path.exists():
         error_exit("HTML manuscript must be generated before EPUB via Calibre.")
 
-    ebook_convert = shutil.which("ebook-convert")
-    if not ebook_convert:
-        log("WARNING: Neither ebooklib nor ebook-convert found. Skipping EPUB.")
-        log("  To fix: pip install ebooklib  OR  sudo apt install calibre")
-        return None
+    # cover_args already added later
+
+    # Add cover if available
+    cover_path = output_dir / "cover.jpg"
+    cover_args = []
+    if cover_path.exists():
+        cover_args = ["--cover", str(cover_path)]
 
     cmd = [
         ebook_convert, str(html_path), str(epub_path),
         "--title", meta["title"],
         "--authors", meta["author"],
         "--language", meta["language"],
-    ]
+    ] + cover_args
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         log(f"WARNING: ebook-convert failed: {result.stderr[:200]}")
@@ -760,11 +771,17 @@ def build_pdf(meta: dict, html_path: Path, output_dir: Path) -> Path:
         log("  To fix: pip install weasyprint  OR  sudo apt install calibre")
         return None
 
+    # Add cover if available
+    cover_path = output_dir / "cover.jpg"
+    cover_args = []
+    if cover_path.exists():
+        cover_args = ["--cover", str(cover_path)]
+
     cmd = [
         ebook_convert, str(html_path), str(pdf_path),
         "--title", meta["title"],
         "--authors", meta["author"],
-    ]
+    ] + cover_args
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         log(f"WARNING: ebook-convert PDF failed: {result.stderr[:200]}")
