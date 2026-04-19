@@ -411,12 +411,12 @@ def add_vignette(canvas: "Image") -> "Image":
                 fill=alpha
             )
     # Invert: dark at edges, transparent in center
-    mask = Image.fromarray(
-        __import__("numpy", fromlist=[""]).array(mask).__class__(
-            [255 - p for p in mask.tobytes()]
-        ) if False else bytes([255 - b for b in mask.tobytes()]),
-        "L"
-    )
+    try:
+        import numpy as np
+        mask = Image.fromarray(255 - np.array(mask), "L")
+    except ImportError:
+        # Fallback: pure-Python byte inversion (slower but no numpy needed)
+        mask = Image.fromarray(bytes([255 - b for b in mask.tobytes()]), "L")
     canvas.paste(vignette, mask=mask)
     return canvas
 

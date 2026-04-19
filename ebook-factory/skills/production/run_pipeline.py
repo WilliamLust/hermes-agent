@@ -197,7 +197,7 @@ def append_to_produced(topic: dict, workbook_dir: Path):
         f"niche: {topic['niche']}\n"
         f"completed: {timestamp}\n"
         f"output: {output_dir}\n"
-        f"upload_kit: {output_dir / 'kdp-upload-kit.md'}\n"
+        f"upload_kit: {output_dir / 'kdp-upload-kit.txt'}\n"
     )
     with open(PRODUCED_TOPICS, "a", encoding="utf-8") as f:
         f.write(entry)
@@ -480,14 +480,20 @@ def main():
         log(f"")
         log(f"Files ready for upload:")
         for f in sorted(output_dir.iterdir()):
-            if f.suffix in (".docx", ".jpg") or f.name == "kdp-upload-kit.md":
+            if f.suffix in (".docx", ".epub", ".pdf", ".jpg") or f.name == "kdp-upload-kit.txt":
                 log(f"  ✓ {f.name}")
 
+        # Build file list for Telegram notification
+        file_list = ", ".join(
+            f.name for f in sorted(output_dir.iterdir())
+            if f.suffix in (".docx", ".epub", ".pdf", ".jpg") or f.name == "kdp-upload-kit.txt"
+        )
         notify(
             f"✅ *Book complete!*\n"
             f"_{topic['title']}_\n\n"
             f"⏱ {mins}m {secs}s\n"
-            f"📁 `{output_dir}`\n\n"
+            f"📁 `{output_dir}`\n"
+            f"📦 {file_list}\n\n"
             f"Open `kdp-upload-kit.txt` to upload."
         )
     else:

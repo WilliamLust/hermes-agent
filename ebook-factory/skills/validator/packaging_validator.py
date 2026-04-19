@@ -58,7 +58,7 @@ def error(msg: str):
 # Validation functions
 # ============================================================================
 
-def check_word_count(workbook_dir: Path, target_total: int = 38400, tolerance: float = 0.15) -> tuple[bool, str]:
+def check_word_count(workbook_dir: Path, target_total: int = 38400, tolerance: float = 0.10) -> tuple[bool, str]:
     """Check total word count across w-polished chapters."""
     polished_dir = workbook_dir / "w-polished"
     if not polished_dir.exists():

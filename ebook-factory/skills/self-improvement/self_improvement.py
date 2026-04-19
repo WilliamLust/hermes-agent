@@ -293,12 +293,26 @@ def harvest_performance(dry_run: bool = False) -> dict:
         log("No books found — nothing to harvest", "Harvester")
         return {"books": 0}
 
-    # Get ASINs with existing performance data
-    asins = [b["asin"] for b in books if b.get("asin")]
+    # Get ASINs with existing performance data (deduplicated)
+    seen_asins = set()
+    unique_books = []
+    for b in books:
+        asin = b.get("asin", "")
+        if asin and asin not in seen_asins:
+            seen_asins.add(asin)
+            unique_books.append(b)
+    books = unique_books
+    log(f"After dedup: {len(books)} unique books", "Harvester")
+
+    asins = [b["asin"] for b in books]
     log(f"ASINs to check: {asins}", "Harvester")
 
     # Scrape live BSR for each
     live_bsr = scrape_kdp_dashboard_bsr(asins)
+
+    # If ALL BSR scrapes failed, log warning — data will use historical values
+    if not live_bsr and asins:
+        log("WARNING: All BSR scrapes failed — using historical LEARNING.md data only", "Harvester")
 
     today = datetime.now().strftime("%Y-%m-%d")
     ts    = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -756,6 +770,13 @@ def _patch_chapter_builder_for_overrides():
     if "prompt_overrides.json" in content:
         log("chapter_builder.py already loads overrides — skipping patch", "Refiner")
         return
+
+    # Create timestamped backup before any modification
+    from datetime import datetime as _dt
+    backup = CHAPTER_BUILDER_PY.with_suffix(f".py.bak.{_dt.now().strftime('%Y%m%d_%H%M%S')}")
+    import shutil
+    shutil.copy2(CHAPTER_BUILDER_PY, backup)
+    log(f"Backed up chapter_builder.py to {backup.name}", "Refiner")
 
     # Find where SYSTEM_PROMPT is defined and inject override loading after it
     override_loader = '''
