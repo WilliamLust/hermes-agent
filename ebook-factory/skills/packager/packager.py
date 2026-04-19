@@ -29,6 +29,7 @@ import shutil
 import argparse
 import subprocess
 import requests
+import html
 from pathlib import Path
 from datetime import datetime
 
@@ -632,9 +633,9 @@ def assemble_html(meta: dict, chapters: list, published_books: list) -> str:
 <html lang="{meta['language']}">
 <head>
 <meta charset="UTF-8"/>
-<meta name="author" content="{meta['author']}"/>
-<meta name="description" content="{meta['description']}"/>
-<title>{meta['title']}</title>
+<meta name="author" content="{html.escape(meta['author'])}"/>
+<meta name="description" content="{html.escape(meta['description'])}"/>
+<title>{html.escape(meta['title'])}</title>
 <style>
 {CSS}
 </style>
