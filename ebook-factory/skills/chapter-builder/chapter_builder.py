@@ -327,7 +327,90 @@ OUTPUT FORMAT:
 - Do NOT include "Chapter N:" in your first line (the system adds that)
 - Start directly with your opening hook
 
-Begin writing the chapter now. Write {chapter['word_count']} words. Do NOT exceed {int(chapter['word_count'] * 1.1)} words — a concise chapter beats a padded one."""
+Begin writing the chapter now. Write {chapter['word_count']} words. Do NOT exceed {int(chapter['word_count'] * 1.1)} words - a concise chapter beats a padded one."""
+
+
+def build_analysis_prompt(original: str, chapter: dict) -> str:
+    """Build a prompt that identifies specific sections to cut (analysis pass)."""
+    current_wc = len(original.split())
+    excess = current_wc - chapter['word_count']
+    target = chapter['word_count']
+    hard_max = int(target * 1.1)
+    return f"""You are a strict editorial assistant. The chapter below is {current_wc} words. The target is {target} words (max {hard_max}).
+It is {excess} words over. Identify the 5 most redundant, repetitive, or padded sections that should be cut or shortened.
+
+For each section:
+1. Quote the first 15 words of the section
+2. State why it should be cut (redundant / filler transition / repeats earlier point / overly verbose)
+3. Estimate how many words cutting it would save
+
+Also list any 3+ sentence paragraphs that could be condensed to 1-2 sentences.
+
+Output format:
+SECTION 1: "[first 15 words]..." - [reason] (~[N] words saved)
+SECTION 2: ...
+PARAGRAPH TO CONDENSE: "[first 15 words]..." (~[N] words saved)
+
+Do NOT rewrite anything. Only identify what to cut.
+
+CHAPTER:
+---
+{original}
+---"""
+
+
+def build_surgical_trim_prompt(original: str, chapter: dict, analysis: str) -> str:
+    """Build a prompt that surgically trims only the identified sections."""
+    current_wc = len(original.split())
+    target = chapter['word_count']
+    hard_max = int(target * 1.1)
+    return f"""You are a strict editorial assistant. Your ONLY task is to reduce the chapter below to approximately {target} words (max {hard_max}).
+Current length: {current_wc} words.
+
+Based on this analysis, make ONLY these surgical edits:
+{analysis}
+
+Rules:
+- Delete entire paragraphs identified as redundant
+- Condense identified verbose paragraphs to 1-2 sentences
+- Remove transitional fluff ("Now that we've covered...", "As mentioned earlier...")
+- Do NOT add new ideas, examples, transitions, or descriptive flourishes
+- Do NOT explain your changes
+- Keep all concrete examples, named studies, and specific numbers
+- Keep all section headers (## and ###)
+- Output ONLY the revised chapter
+
+CHAPTER:
+---
+{original}
+---
+
+Output the trimmed chapter now."""
+
+
+def hard_truncate_chapter(content: str, target: int) -> str:
+    """Safety net: truncate chapter at a paragraph boundary near the target word count."""
+    words = content.split()
+    if len(words) <= target:
+        return content
+
+    # Find the last paragraph break before the target
+    paragraphs = re.split(r'\n\n+', content)
+    result = []
+    word_count = 0
+    for para in paragraphs:
+        para_words = len(para.split())
+        if word_count + para_words > target + 200:  # allow small overshoot
+            break
+        result.append(para)
+        word_count += para_words
+
+    trimmed = '\n\n'.join(result)
+    # Ensure we still have a closing section
+    if not re.search(r'##.*(summary|conclusion|takeaway|key point)', trimmed, re.I):
+        trimmed += '\n\n## Key Takeaways\n\nApply the principles from this chapter consistently. Small, targeted actions compound into lasting change.'
+
+    return trimmed
 
 
 def build_refinement_prompt(original: str, issues: list[str], chapter: dict) -> str:
@@ -399,14 +482,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ollama_client import ollama_call_with_retry
 
 def call_ollama(prompt: str, model: str, system: str = SYSTEM_PROMPT,
-                num_predict: int = 4500) -> str:
+                num_predict: int = 4500,
+                temperature: float = 0.7,
+                top_p: float = 0.9,
+                repeat_penalty: float = 1.1) -> str:
     """Call Ollama API with retry. Returns the response text (empty string on failure)."""
     log(f"Calling Ollama ({model})... (may take 5-15 min)")
     result = ollama_call_with_retry(
         prompt, system, model,
         max_retries=3,
         num_predict=num_predict,
-        temperature=0.7,
+        temperature=temperature,
+        top_p=top_p,
+        repeat_penalty=repeat_penalty,
         timeout=REQUEST_TIMEOUT,
     )
     if result is None:
@@ -560,7 +648,8 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
         log_section(f"Phase 1b: Applying human critique")
         log(f"Critique: {critique}")
         critique_prompt = build_refinement_prompt(content, [f"HUMAN CRITIQUE: {critique}"], chapter)
-        refined = call_ollama(critique_prompt, model, num_predict=5500)
+        refined = call_ollama(critique_prompt, model, num_predict=5500,
+                              temperature=0.5, top_p=0.9, repeat_penalty=1.1)
         if refined:
             content = refined
             log("Critique applied successfully")
@@ -578,12 +667,35 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
         for issue in issues:
             log(f"  - {issue}")
 
-        refine_prompt = build_refinement_prompt(content, issues, chapter)
-        refined = call_ollama(refine_prompt, model, num_predict=5500)
+        # Check if this is a word-count-over issue (surgical trim approach)
+        wc_over_issues = [i for i in issues if "Word count too high" in i]
+        other_issues = [i for i in issues if "Word count too high" not in i]
+
+        if wc_over_issues:
+            # Two-step surgical trim: analysis pass, then trim pass
+            log("Starting surgical trim: analysis pass...")
+            analysis_prompt = build_analysis_prompt(content, chapter)
+            analysis = call_ollama(analysis_prompt, model, num_predict=2000,
+                                   temperature=0.25, top_p=0.85, repeat_penalty=1.15)
+            if analysis:
+                log("Analysis complete. Starting surgical trim pass...")
+                refine_prompt = build_surgical_trim_prompt(content, chapter, analysis)
+                refined = call_ollama(refine_prompt, model, num_predict=5500,
+                                      temperature=0.25, top_p=0.85, repeat_penalty=1.15)
+            else:
+                # Fallback to standard refinement
+                log("WARNING: Analysis pass failed - using standard refinement")
+                refine_prompt = build_refinement_prompt(content, issues, chapter)
+                refined = call_ollama(refine_prompt, model, num_predict=5500)
+        else:
+            # Standard refinement for non-word-count issues
+            refine_prompt = build_refinement_prompt(content, issues, chapter)
+            refined = call_ollama(refine_prompt, model, num_predict=5500)
+
         if refined:  # only replace if refinement returned content
             content = refined
         else:
-            log(f"Refinement {iteration} returned empty — keeping prior content")
+            log(f"Refinement {iteration} returned empty - keeping prior content")
         issues = validate_chapter(content, chapter)
 
         if not issues:
@@ -591,6 +703,18 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
             break
         else:
             log(f"Refinement {iteration} complete. Remaining issues: {len(issues)}")
+
+    # --- Hard truncation safety net ---
+    if content:
+        current_wc = len(content.split())
+        hard_max = int(chapter['word_count'] * 1.1)
+        if current_wc > hard_max:
+            log(f"Word count still over after refinements ({current_wc} > {hard_max}). Applying hard truncation...")
+            content = hard_truncate_chapter(content, chapter['word_count'])
+            new_wc = len(content.split())
+            log(f"Hard truncation applied: {current_wc} -> {new_wc} words")
+            # Re-validate after truncation
+            issues = validate_chapter(content, chapter)
 
     # --- Final validation status ---
     if issues:

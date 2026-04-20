@@ -65,6 +65,8 @@ def ollama_call(
     model: str = "qwen3.5:27b-16k",
     num_predict: int = 6000,
     temperature: float = 0.7,
+    top_p: float = 0.9,
+    repeat_penalty: float = 1.1,
     num_ctx: int = 16384,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str | None:
@@ -86,6 +88,8 @@ def ollama_call(
             "temperature": temperature,
             "num_predict": num_predict,
             "num_ctx": num_ctx,
+            "top_p": top_p,
+            "repeat_penalty": repeat_penalty,
         },
     }
 
