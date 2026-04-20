@@ -481,6 +481,54 @@ def main():
             die(f"Could not find workbook directory after outliner ran.")
         log(f"Workbook: {workbook_dir}")
 
+    # ── Outline chapter count gate ────────────────────────────────────────────
+    # The outliner (Qwen 27B) occasionally generates fewer than 12 chapters.
+    # Catch this before the chapter builder starts so we don't waste GPU time
+    # on a doomed run. If short, re-run the outliner once. If still short,
+    # append placeholder chapters so the pipeline can continue.
+    if not args.dry_run and workbook_dir:
+        expected = topic["chapters"]
+        outline_path = workbook_dir / "01_outline.md"
+        if outline_path.exists():
+            outline_text = outline_path.read_text(encoding="utf-8")
+            import re
+            ch_headers = re.findall(r'^##\s+Chapter\s+(\d+)', outline_text, re.MULTILINE)
+            found = len(ch_headers)
+            if found < expected:
+                log(f"WARNING: Outline has {found} chapters, expected {expected}")
+                # Attempt 1: re-run outliner
+                log("Re-running outliner to fix missing chapters...")
+                if not run_outliner(topic, dry_run=False):
+                    log("WARNING: Outliner re-run failed")
+                else:
+                    outline_text = outline_path.read_text(encoding="utf-8")
+                    ch_headers = re.findall(r'^##\s+Chapter\s+(\d+)', outline_text, re.MULTILINE)
+                    found = len(ch_headers)
+                    if found >= expected:
+                        log(f"Outline fixed: {found} chapters after re-run")
+                    else:
+                        log(f"Outline still has {found} chapters after re-run")
+
+                # If still short, append missing chapters to outline
+                if found < expected:
+                    last_ch = max(int(n) for n in ch_headers) if ch_headers else 0
+                    log(f"Appending {expected - found} placeholder chapter(s) to outline")
+                    appendix = ""
+                    for ch_num in range(last_ch + 1, expected + 1):
+                        appendix += f"\n---\n\n## Chapter {ch_num}: [Placeholder — to be expanded]\n"
+                        appendix += f"**Objective:** [To be determined — this chapter was auto-generated to reach the target chapter count.]\n"
+                        appendix += f"**Target Audience:** Readers continuing from Chapter {ch_num - 1}.\n"
+                        appendix += f"**Word Count Target:** 2800 words\n"
+                        appendix += f"### Sections\n"
+                        appendix += f"1. **[Section 1]** (~700 words)\n"
+                        appendix += f"2. **[Section 2]** (~700 words)\n"
+                        appendix += f"3. **[Section 3]** (~700 words)\n"
+                        appendix += f"4. **[Section 4]** (~700 words)\n"
+                    outline_path.write_text(outline_text + appendix, encoding="utf-8")
+                    log(f"Appended chapters {last_ch + 1}-{expected} to outline")
+            else:
+                log(f"Outline chapter count OK: {found}/{expected}")
+
     # ── Step 2: Chapter Builder ───────────────────────────────────────────────
     if not run_chapter_builder(workbook_dir or Path("/tmp"), topic["chapters"], args.dry_run):
         die(f"Chapter builder critically failed — too many chapters missing.")

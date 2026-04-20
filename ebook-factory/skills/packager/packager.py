@@ -528,7 +528,10 @@ def extract_book_metadata(workbook_dir: Path, outline_path: Path, cli_args) -> d
         title = slug.title()
 
     author = cli_args.author if cli_args.author else DEFAULT_AUTHOR
+    # Slug: strip "book-" prefix from directory name for clean filenames
     slug = workbook_dir.name
+    if slug.startswith("book-"):
+        slug = slug[5:]
 
     # Load keywords from existing kdp-metadata.json if available (clean Qwen-generated phrases)
     # Fall back to scraping outline keywords only if no metadata file exists yet
