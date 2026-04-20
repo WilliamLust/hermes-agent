@@ -123,6 +123,8 @@ def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
     in_title_page = False
     title_page_done = False
     copyright_done = False
+    in_toc = False
+    toc_count = 0
 
     for i, p in enumerate(paragraphs):
         text = p.text.strip()
@@ -168,7 +170,13 @@ def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
                 log(f"  Styled author: '{text}'")
                 continue
 
-            # Publisher name (matches author name)
+            # Publisher name (skip if same as author — redundant)
+            if text == meta.get("publisher", "") and text == meta.get("author", ""):
+                # Remove the duplicate publisher line entirely
+                parent = p._element.getparent()
+                parent.remove(p._element)
+                log(f"  Removed duplicate publisher line (same as author)")
+                continue
             if text == meta.get("publisher", ""):
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for run in p.runs:
@@ -207,6 +215,63 @@ def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
             new_run._element.append(run_elem)
             copyright_done = True
             log(f"  Added page break after copyright page")
+            continue
+
+        # Style the TOC heading ("Table of Contents")
+        if p.style.name == "Heading 2" and text == "Table of Contents":
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in p.runs:
+                run.font.size = Pt(20)
+                run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x1A)
+            pf = p.paragraph_format
+            pf.space_before = Pt(24)
+            pf.space_after = Pt(18)
+            in_toc = True
+            toc_count = 0
+            log(f"  Styled TOC heading (centered, 20pt)")
+            continue
+
+        # Style TOC entries (Compact style paragraphs with chapter names)
+        # Pandoc puts these inside <w:hyperlink> elements, so p.runs is empty.
+        # We need to access the XML directly to style the runs inside hyperlinks.
+        if p.style.name == "Compact" and in_toc and toc_count < 12:
+            toc_count += 1
+            nsmap = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            # Find all <w:r> elements (both direct and inside hyperlinks)
+            for r_elem in p._element.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r'):
+                rpr = r_elem.find('w:rPr', nsmap)
+                if rpr is None:
+                    rpr = r_elem.makeelement('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}rPr', {})
+                    r_elem.insert(0, rpr)
+                # Set font size (13pt = 26 half-points)
+                sz = rpr.find('w:sz', nsmap)
+                if sz is None:
+                    sz = r_elem.makeelement('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}sz', {})
+                    rpr.append(sz)
+                sz.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '26')
+                # Also set complex script size
+                szCs = rpr.find('w:szCs', nsmap)
+                if szCs is None:
+                    szCs = r_elem.makeelement('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}szCs', {})
+                    rpr.append(szCs)
+                szCs.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '26')
+                # Override hyperlink color to dark gray
+                color = rpr.find('w:color', nsmap)
+                if color is None:
+                    color = r_elem.makeelement('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}color', {})
+                    rpr.append(color)
+                color.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val', '333333')
+            pf = p.paragraph_format
+            pf.space_after = Pt(6)
+            pf.space_before = Pt(2)
+            if toc_count >= 12:
+                in_toc = False
+                # Page break after TOC (before Chapter 1)
+                from docx.oxml.ns import qn
+                run_elem = p._element.makeelement(qn('w:br'), {qn('w:type'): 'page'})
+                new_run = p.add_run()
+                new_run._element.append(run_elem)
+                log(f"  Added page break after TOC")
             continue
 
         # Add page break before each chapter heading (Chapter N: ...)
