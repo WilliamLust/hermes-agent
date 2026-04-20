@@ -68,6 +68,151 @@ def error_exit(msg: str) -> None:
     sys.exit(1)
 
 
+def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
+    """Post-process pandoc-generated DOCX to fix the title page formatting.
+
+    Pandoc converts the HTML title-page div into bare paragraphs with no
+    special styling. This function:
+      1. Identifies the title-page paragraphs (h1.book-title + p.book-author etc.)
+      2. Centers them and applies proper font sizes
+      3. Adds page breaks after title and copyright pages
+      4. Removes any pandoc auto-generated Title/Author paragraphs that
+         duplicate the HTML title page
+    """
+    try:
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        log("  python-docx not installed -- skipping DOCX title page fix")
+        return
+
+    doc = Document(str(docx_path))
+    paragraphs = doc.paragraphs
+
+    # Phase 1: Remove duplicate pandoc-generated Title/Author paragraphs
+    # Pandoc creates "Title" and "Author" style paragraphs from metadata.
+    # These duplicate the HTML title page. Remove them.
+    to_remove = []
+    for i, p in enumerate(paragraphs):
+        if p.style.name in ("Title", "Author") and i < 5:
+            to_remove.append(i)
+            log(f"  Removing duplicate pandoc paragraph: style={p.style.name}, text={p.text[:40]}")
+
+    # Remove in reverse order to preserve indices
+    for i in reversed(to_remove):
+        p = paragraphs[i]
+        parent = p._element.getparent()
+        parent.remove(p._element)
+
+    # Re-read paragraphs after removal
+    paragraphs = doc.paragraphs
+
+    # Phase 2: Format the title page elements
+    # The HTML title-page div produces these paragraphs in order:
+    #   - h1.book-title  -> "Heading 1" style (the book title)
+    #   - p.book-subtitle -> "First Paragraph" or body (the subtitle)
+    #   - p.book-author  -> body text ("by Author Name")
+    #   - p.book-publisher -> body text (publisher name)
+    #   - p.book-date    -> body text (year)
+    title_text = meta.get("title", "")
+    author_text = f"by {meta.get('author', 'William Archer')}"
+    subtitle_text = meta.get("subtitle", "")
+    year_text = str(meta.get("date", ""))[:4] if meta.get("date") else ""
+
+    in_title_page = False
+    title_page_done = False
+    copyright_done = False
+
+    for i, p in enumerate(paragraphs):
+        text = p.text.strip()
+
+        # Detect start of title page (the Heading 1 with the book title)
+        if not title_page_done and p.style.name == "Heading 1" and text == title_text:
+            in_title_page = True
+            # Style the title: large, centered, bold
+            p.style = doc.styles['Title']
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in p.runs:
+                run.font.size = Pt(28)
+                run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x1A)
+            # Add space before
+            pf = p.paragraph_format
+            pf.space_before = Pt(72)
+            pf.space_after = Pt(12)
+            log(f"  Styled title: '{text[:50]}'")
+            continue
+
+        if in_title_page and not title_page_done:
+            # Subtitle
+            if subtitle_text and text == subtitle_text:
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(16)
+                    run.font.italic = True
+                    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+                pf = p.paragraph_format
+                pf.space_after = Pt(24)
+                log(f"  Styled subtitle: '{text[:50]}'")
+                continue
+
+            # Author line
+            if text == author_text or (text.startswith("by ") and meta.get("author", "") in text):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                pf = p.paragraph_format
+                pf.space_before = Pt(36)
+                pf.space_after = Pt(6)
+                log(f"  Styled author: '{text}'")
+                continue
+
+            # Publisher name (matches author name)
+            if text == meta.get("publisher", ""):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(11)
+                    run.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
+                continue
+
+            # Year
+            if text == year_text or (len(text) == 4 and text.isdigit()):
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(11)
+                    run.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
+                # Page break after title page
+                pf = p.paragraph_format
+                pf.space_after = Pt(0)
+                from docx.oxml.ns import qn
+                run_elem = p._element.makeelement(qn('w:br'), {qn('w:type'): 'page'})
+                # Add page break as a new run at end
+                new_run = p.add_run()
+                new_run._element.append(run_elem)
+                title_page_done = True
+                in_title_page = False
+                log(f"  Styled year + page break after title page")
+                continue
+
+        # Add page break after copyright page
+        if not copyright_done and "All rights reserved" in text and "reproduced" in text:
+            # Find the last paragraph of the copyright section
+            # (it ends with "Published YYYY by...")
+            pass
+        if not copyright_done and text.startswith("Published") and meta.get("author", "") in text:
+            from docx.oxml.ns import qn
+            run_elem = p._element.makeelement(qn('w:br'), {qn('w:type'): 'page'})
+            new_run = p.add_run()
+            new_run._element.append(run_elem)
+            copyright_done = True
+            log(f"  Added page break after copyright page")
+            continue
+
+    doc.save(str(docx_path))
+    log(f"  DOCX title page formatting applied")
+
+
 # ============================================================================
 # FILE I/O
 # ============================================================================
@@ -1345,18 +1490,25 @@ Examples:
     pandoc = shutil.which("pandoc")
     if pandoc and html_path.exists():
         try:
+            # NOTE: Do NOT pass --metadata title/author here.
+            # Pandoc auto-generates a Title+Author block from metadata, which
+            # duplicates the HTML title-page div and creates an ugly doubled
+            # first page. The HTML already has a properly formatted title page.
             result = subprocess.run(
                 [
                     pandoc,
                     str(html_path),
                     "-o", str(docx_path),
-                    "--metadata", f"title={meta['title']}",
-                    "--metadata", f"author={meta.get('author', 'William Archer')}",
                     "--toc",
                 ],
                 capture_output=True, text=True, timeout=60
             )
             if result.returncode == 0 and docx_path.exists():
+                # Post-process: fix title page formatting in the DOCX
+                try:
+                    _fix_docx_title_page(docx_path, meta)
+                except Exception as e:
+                    log(f"WARNING: DOCX title page fix failed: {e}")
                 log(f"DOCX built via pandoc: {docx_path}")
                 outputs["docx"] = docx_path
             else:
