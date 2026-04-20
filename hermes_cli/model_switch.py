@@ -391,7 +391,22 @@ def _resolve_alias_fallback(
     Falls back to ``("openrouter", "nous")`` only when no authenticated
     providers are supplied (backwards compat for non-interactive callers).
     """
-    providers = authenticated_providers or ("openrouter", "nous")
+    # When no explicit provider list given, prefer the user's active_provider
+    # (from auth.json) over hardcoding OpenRouter first.
+    if authenticated_providers:
+        providers = authenticated_providers
+    else:
+        try:
+            from hermes_cli.auth import get_active_provider
+            _active = (get_active_provider() or "").strip().lower()
+        except Exception:
+            _active = ""
+        _aggs = ("nous", "openrouter")
+        providers = (
+            (_active, *(a for a in _aggs if a != _active))
+            if _active in _aggs
+            else _aggs
+        )
     for provider in providers:
         result = resolve_alias(raw_input, provider)
         if result is not None:

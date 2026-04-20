@@ -1060,16 +1060,27 @@ def detect_provider_for_model(
         # give a clear error rather than silently using the wrong provider
         return (direct_match, name)
 
-    # --- Step 2: check OpenRouter catalog ---
-    # First try exact match (handles provider/model format)
+    # --- Step 2: aggregator catalog check ---
+    # Prefer the user's active_provider (from auth.json) over hardcoding
+    # OpenRouter.  Both Nous and OpenRouter are aggregators that carry
+    # vendor/model slugs, so when the model isn't found on a direct
+    # provider, route it to whichever aggregator the user actually uses.
+    try:
+        from hermes_cli.auth import get_active_provider
+        _active = (get_active_provider() or "").strip().lower()
+    except Exception:
+        _active = ""
+
+    preferred_aggregator = _active if _active in _AGGREGATORS else "openrouter"
+
     or_slug = _find_openrouter_slug(name)
     if or_slug:
-        if current_provider != "openrouter":
-            return ("openrouter", or_slug)
-        # Already on openrouter, just return the resolved slug
+        if current_provider != preferred_aggregator:
+            return (preferred_aggregator, or_slug)
+        # Already on the preferred aggregator, just return the resolved slug
         if or_slug != name:
-            return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
+            return (preferred_aggregator, or_slug)
+        return None  # already on the right aggregator with matching name
 
     return None
 
