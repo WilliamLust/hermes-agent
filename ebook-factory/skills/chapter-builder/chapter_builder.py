@@ -355,16 +355,27 @@ CURRENT CHAPTER:
 Return the expanded chapter now. Write approximately {chapter['word_count']} words total."""
         else:
             excess = current_wc - chapter['word_count']
-            return f"""The chapter below is {current_wc} words but the target is {chapter['word_count']} words (±10%).
-It is {excess} words over. Trim it by cutting redundancy, condensing repetitive explanations, and removing padding.
-Keep all concrete examples, key arguments, and section structure. Return the complete trimmed chapter.
+            hard_max = int(chapter['word_count'] * 1.1)
+            return f"""The chapter below is {current_wc} words. The HARD MAXIMUM is {hard_max} words.
+It is {excess} words over. You MUST cut at least {excess - int(chapter['word_count'] * 0.1)} words.
+
+Trimming rules (follow strictly):
+- Delete entire paragraphs that repeat points already made elsewhere
+- Condense any section that uses 3+ sentences to make a point that needs 1-2
+- Remove transitional fluff ("Now that we've covered...", "As mentioned earlier...")
+- Cut adjectives and adverbs that add no information
+- Keep all concrete examples, named studies, and specific numbers - these are non-negotiable
+- Keep section headers (## and ###) - structure must remain
+
+Return ONLY the trimmed chapter. Do NOT add new content. Target: {chapter['word_count']} words.
+Going over {hard_max} words is a FAILURE.
 
 CURRENT CHAPTER:
 ---
 {original}
 ---
 
-Return the trimmed chapter now. Write approximately {chapter['word_count']} words total."""
+Return the trimmed chapter now."""
 
     # Structural issues: targeted rewrite
     return f"""Fix these specific issues in the chapter below:

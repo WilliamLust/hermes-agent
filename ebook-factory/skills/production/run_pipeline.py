@@ -500,6 +500,44 @@ def main():
         if promoted:
             log(f"Auto‑promoted {promoted} chapter(s) from w‑drafts/ to w‑polished/")
 
+    # ── Chapter count gate ──────────────────────────────────────────────────────
+    if not args.dry_run and workbook_dir:
+        polished_dir = workbook_dir / "w-polished"
+        polished_count = len(list(polished_dir.glob("chapter-*.md")))
+        expected = topic["chapters"]
+        if polished_count < expected:
+            missing = []
+            for ch in range(1, expected + 1):
+                if not (polished_dir / f"chapter-{ch:02d}.md").exists():
+                    missing.append(ch)
+            log(f"WARNING: Only {polished_count}/{expected} chapters in w-polished. Missing: {missing}")
+            log(f"Retrying missing chapters...")
+            for ch in missing:
+                cmd = [
+                    PYTHON, str(CHAPTER_BUILDER),
+                    "--chapter", str(ch),
+                    "--book-dir", str(workbook_dir),
+                    "--force",
+                ]
+                log(f"  Rebuilding chapter {ch}...")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+                if result.returncode != 0:
+                    log(f"  WARNING: Chapter {ch} rebuild returned exit code {result.returncode}")
+                # Promote the rebuilt chapter
+                draft = workbook_dir / "w-drafts" / f"chapter-{ch:02d}.md"
+                dest = polished_dir / f"chapter-{ch:02d}.md"
+                if draft.exists():
+                    import shutil
+                    shutil.copy2(draft, dest)
+                    log(f"  Chapter {ch} rebuilt and promoted")
+                else:
+                    log(f"  ERROR: Chapter {ch} draft still missing after rebuild")
+            # Recheck
+            polished_count = len(list(polished_dir.glob("chapter-*.md")))
+            if polished_count < expected:
+                die(f"Still missing {expected - polished_count} chapter(s) after retry. Cannot continue.")
+            log(f"Chapter count gate passed: {polished_count}/{expected} chapters")
+
     # ── Step 3: Packager (must run before cover — creates kdp-metadata.json) ──
     if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
         log("WARNING: Packager failed — output may be incomplete. Continuing.")
