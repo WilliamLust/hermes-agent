@@ -275,9 +275,31 @@ def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
             continue
 
         # Add page break before each chapter heading (Chapter N: ...)
+        # Also add a bookmark so TOC hyperlinks (anchor=chapter-NN) work.
         if p.style.name == "Heading 1" and "Chapter" in text:
             p.paragraph_format.page_break_before = True
-            log(f"  Page break before: '{text[:60]}'")
+            # Extract chapter number and create matching bookmark
+            import re
+            ch_match = re.search(r'Chapter\s+(\d+)', text)
+            if ch_match:
+                ch_num = int(ch_match.group(1))
+                bm_name = f"chapter-{ch_num:02d}"
+                bm_id = 100 + ch_num  # unique ID per bookmark
+                ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+                # Insert bookmarkStart before the first run
+                bm_start = p._element.makeelement(f'{{{ns}}}bookmarkStart', {
+                    f'{{{ns}}}id': str(bm_id),
+                    f'{{{ns}}}name': bm_name,
+                })
+                p._element.insert(0, bm_start)
+                # Append bookmarkEnd after the last element
+                bm_end = p._element.makeelement(f'{{{ns}}}bookmarkEnd', {
+                    f'{{{ns}}}id': str(bm_id),
+                })
+                p._element.append(bm_end)
+                log(f"  Page break + bookmark '{bm_name}' before: '{text[:60]}'")
+            else:
+                log(f"  Page break before: '{text[:60]}'")
             continue
 
     doc.save(str(docx_path))
