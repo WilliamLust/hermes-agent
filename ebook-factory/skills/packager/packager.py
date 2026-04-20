@@ -209,6 +209,12 @@ def _fix_docx_title_page(docx_path: Path, meta: dict) -> None:
             log(f"  Added page break after copyright page")
             continue
 
+        # Add page break before each chapter heading (Chapter N: ...)
+        if p.style.name == "Heading 1" and "Chapter" in text:
+            p.paragraph_format.page_break_before = True
+            log(f"  Page break before: '{text[:60]}'")
+            continue
+
     doc.save(str(docx_path))
     log(f"  DOCX title page formatting applied")
 
@@ -1490,16 +1496,19 @@ Examples:
     pandoc = shutil.which("pandoc")
     if pandoc and html_path.exists():
         try:
-            # NOTE: Do NOT pass --metadata title/author here.
-            # Pandoc auto-generates a Title+Author block from metadata, which
-            # duplicates the HTML title-page div and creates an ugly doubled
-            # first page. The HTML already has a properly formatted title page.
+            # NOTE: Do NOT pass --metadata title/author or --toc here.
+            # --metadata title/author makes pandoc auto-generate a Title+Author
+            # block that duplicates the HTML title-page div.
+            # --toc creates a Word TOC field code that (a) appears at the very
+            # start of the document (before the title page), and (b) shows as an
+            # empty placeholder in LibreOffice/ONLYOFFICE that requires manual
+            # "Update Field" to populate. The HTML already has a properly
+            # formatted TOC with chapter links that pandoc will convert normally.
             result = subprocess.run(
                 [
                     pandoc,
                     str(html_path),
                     "-o", str(docx_path),
-                    "--toc",
                 ],
                 capture_output=True, text=True, timeout=60
             )
