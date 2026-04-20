@@ -50,7 +50,7 @@ LOCK_FILE        = HERMES_HOME / "ebook-factory" / ".pipeline.lock"
 
 # Ollama configuration for model management
 OLLAMA_BASE_URL  = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OUTLINE_MODEL    = "qwen3.5:35b-a3b-q4_k_m"
+OUTLINE_MODEL    = "qwen3.5:27b-16k"
 
 VENV_PYTHON      = Path.home() / "hermes-agent" / "venv" / "bin" / "python3"
 PYTHON           = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
@@ -473,10 +473,6 @@ def main():
     if not run_outliner(topic, args.dry_run):
         die(f"Outliner failed for: {topic['title']}")
 
-    # ── Free VRAM: unload 35B model before chapter building ──────────────────
-    if not args.dry_run:
-        unload_ollama_model(OUTLINE_MODEL)
-
     # ── Locate workbook ───────────────────────────────────────────────────────
     workbook_dir = None
     if not args.dry_run:
@@ -504,14 +500,14 @@ def main():
         if promoted:
             log(f"Auto‑promoted {promoted} chapter(s) from w‑drafts/ to w‑polished/")
 
-    # ── Step 3: Cover Generator ───────────────────────────────────────────────
+    # ── Step 3: Packager (must run before cover — creates kdp-metadata.json) ──
+    if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
+        log("WARNING: Packager failed — output may be incomplete. Continuing.")
+
+    # ── Step 4: Cover Generator (needs kdp-metadata.json from packager) ──────
     if not run_cover_generator(workbook_dir or Path("/tmp"), args.dry_run,
                                 niche=topic.get("niche", "")):
         log("WARNING: Cover generator failed — generate cover manually.")
-
-    # ── Step 4: Packager ─────────────────────────────────────────────────────
-    if not run_packager(workbook_dir or Path("/tmp"), args.dry_run):
-        log("WARNING: Packager failed — output may be incomplete. Continuing.")
 
     # ── Step 5: Validator ───────────────────────────────────────────────
     if not run_validator(workbook_dir or Path("/tmp"), args.dry_run):

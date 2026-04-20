@@ -97,12 +97,11 @@ python3 ~/.hermes/ebook-factory/skills/production/topic_approval.py --auto-pick 
 
 | Task | Model | Why |
 |------|-------|-----|
-| Chapter drafting | qwen3.5:27b-16k (local Ollama) | Zero cost, 557 w/min, clean finishes |
-| Outlining | qwen3.5:35b-a3b (local Ollama) | Better reasoning for structure |
+| Outlining + Drafting | qwen3.5:27b-16k (local Ollama) | Zero cost, single model, no VRAM swap needed |
 | Orchestration | API model (GLM-5.1 / DeepSeek) | High intelligence for pipeline control |
 | Cover art | Ideogram API | $0.09/cover, good typography |
 
-CRITICAL: 35B model puts output in message.thinking (not message.content). Always pass "think": false in Ollama API calls for 35B.
+CRITICAL: All Qwen 3.5 models require "think": false in Ollama API calls. Without it, content goes to message.thinking and message.content is empty. The shared ollama_client.py handles this automatically.
 
 ## Publishing
 

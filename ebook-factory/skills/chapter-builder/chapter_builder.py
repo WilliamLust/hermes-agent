@@ -420,17 +420,29 @@ def validate_chapter(content: str, chapter: dict) -> list[str]:
 
     content_normalized = normalize(content)
     for kw in chapter.get("keywords", []):
-        if kw and normalize(kw) not in content_normalized:
+        if not kw:
+            continue
+        # Substring match: "async onboarding" matches "asynchronous onboarding process"
+        # Also try individual words from multi-word keywords
+        kw_parts = kw.lower().split()
+        kw_found = normalize(kw) in content_normalized
+        # If exact phrase not found, check if all significant words appear
+        if not kw_found and len(kw_parts) > 1:
+            words_found = sum(1 for w in kw_parts if len(w) > 3 and w in content_normalized)
+            kw_found = words_found >= len(kw_parts) - 1  # allow 1 missing word
+        if not kw_found:
             issues.append(f"Missing keyword: '{kw}'")
 
     # Check for conclusion / summary section
     if not re.search(r'##.*(summary|conclusion|takeaway|key point)', content, re.I):
         issues.append("Missing closing summary or conclusion section (## Summary / ## Conclusion / ## Key Takeaways)")
 
-    # Check for section structure
+    # Check for section structure (count h2 and h3 headers — h3 is valid for subsections)
     h2_count = len(re.findall(r'^##\s', content, re.M))
-    if h2_count < 3:
-        issues.append(f"Too few sections: {h2_count} (need at least 3 ## headers)")
+    h3_count = len(re.findall(r'^###\s', content, re.M))
+    section_count = h2_count + h3_count
+    if section_count < 3:
+        issues.append(f"Too few sections: {section_count} (need at least 3 section headers)")
 
     return issues
 

@@ -32,8 +32,8 @@ LEARNING_FILE  = Path.home() / "books" / "factory" / "LEARNING.md"
 STYLE_GUIDE    = Path.home() / "books" / "factory" / "style-guide.md"
 
 OLLAMA_URL     = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434") + "/api/chat"
-OUTLINE_MODEL  = "qwen3.5:35b-a3b-q4_k_m"    # Reasoning tasks — best for structure
-COVER_MODEL    = "qwen3.5:35b-a3b-q4_k_m"    # Same model — cover prompt
+OUTLINE_MODEL  = "qwen3.5:27b-16k"        # Unified model — same as chapter builder
+COVER_MODEL    = "qwen3.5:27b-16k"        # Same model — cover prompt
 REQUEST_TIMEOUT= 600   # 10 min max — outlining is a long single call
 
 # ======================================================================
@@ -194,11 +194,22 @@ QUALITY_EXAMPLE = """
 # ======================================================================
 
 # Import shared Ollama client with retry + think:false + fallback
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+# ollama_client.py lives at ~/.hermes/ebook-factory/skills/ — find it
+_HERMES_HOME = Path.home() / ".hermes"
+_ollama_client_dirs = [
+    _HERMES_HOME / "ebook-factory" / "skills",     # primary location
+    Path(__file__).resolve().parent.parent,          # relative to this script
+    Path(__file__).resolve().parent.parent.parent,   # one more level up
+]
+for _d in _ollama_client_dirs:
+    if (_d / "ollama_client.py").exists():
+        sys.path.insert(0, str(_d))
+        break
 from ollama_client import ollama_call_with_retry, ollama_call_with_fallback
 
 # Keep OLLAMA_URL for backwards compat but all calls go through ollama_client
-FALLBACK_CHAIN = ["qwen3.5:27b-16k"]
+# No fallback chain needed — single model (27B) used throughout
+FALLBACK_CHAIN = []  # Empty: if 27B fails, retry (not fall back to a different model)
 
 
 def ollama_call(prompt: str, system: str, model: str, num_predict: int = 6000,
@@ -599,7 +610,7 @@ def main():
 
     if not outline:
         error_exit("LLM failed to generate outline. Check Ollama is running: "
-                   "`ollama list` and `ollama run qwen3.5:35b-a3b-q4_k_m`")
+                   "`ollama list` and `ollama run qwen3.5:27b-16k`")
 
     # Step 4: Validate
     log_section("Step 4: Validating outline")
