@@ -327,7 +327,7 @@ OUTPUT FORMAT:
 - Do NOT include "Chapter N:" in your first line (the system adds that)
 - Start directly with your opening hook
 
-Begin writing the chapter now. Write {chapter['word_count']} words."""
+Begin writing the chapter now. Write {chapter['word_count']} words. Do NOT exceed {int(chapter['word_count'] * 1.1)} words — a concise chapter beats a padded one."""
 
 
 def build_refinement_prompt(original: str, issues: list[str], chapter: dict) -> str:
@@ -339,10 +339,11 @@ def build_refinement_prompt(original: str, issues: list[str], chapter: dict) -> 
     structural_issues = [i for i in issues if "Word count" not in i and "word count" not in i]
 
     if word_count_issues and not structural_issues:
-        # Word count only: expand specific sections rather than full rewrite
+        # Word count only: expand OR trim depending on direction
         current_wc = len(original.split())
         needed = chapter['word_count'] - current_wc
-        return f"""The chapter below is {current_wc} words but needs {chapter['word_count']} words (±10%).
+        if needed > 0:
+            return f"""The chapter below is {current_wc} words but needs {chapter['word_count']} words (±10%).
 Add approximately {needed} words by expanding the concrete examples and case studies with more specific detail.
 Do NOT rewrite the whole chapter. Return the complete improved chapter.
 
@@ -352,6 +353,18 @@ CURRENT CHAPTER:
 ---
 
 Return the expanded chapter now. Write approximately {chapter['word_count']} words total."""
+        else:
+            excess = current_wc - chapter['word_count']
+            return f"""The chapter below is {current_wc} words but the target is {chapter['word_count']} words (±10%).
+It is {excess} words over. Trim it by cutting redundancy, condensing repetitive explanations, and removing padding.
+Keep all concrete examples, key arguments, and section structure. Return the complete trimmed chapter.
+
+CURRENT CHAPTER:
+---
+{original}
+---
+
+Return the trimmed chapter now. Write approximately {chapter['word_count']} words total."""
 
     # Structural issues: targeted rewrite
     return f"""Fix these specific issues in the chapter below:
@@ -375,7 +388,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ollama_client import ollama_call_with_retry
 
 def call_ollama(prompt: str, model: str, system: str = SYSTEM_PROMPT,
-                num_predict: int = 6000) -> str:
+                num_predict: int = 4500) -> str:
     """Call Ollama API with retry. Returns the response text (empty string on failure)."""
     log(f"Calling Ollama ({model})... (may take 5-15 min)")
     result = ollama_call_with_retry(
@@ -408,7 +421,8 @@ def validate_chapter(content: str, chapter: dict) -> list[str]:
 
     if words < low:
         issues.append(f"Word count too low: {words} words (need at least {low})")
-    # Note: too long is never flagged — a longer chapter is never a problem for the reader
+    if words > high:
+        issues.append(f"Word count too high: {words} words (max {high}) — trim to stay within target")
 
     # Check for placeholder text
     if re.search(r'\btbd\b|\bto be determined\b|\bplaceholder\b|\b\[insert\b', content, re.I):
@@ -535,7 +549,7 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
         log_section(f"Phase 1b: Applying human critique")
         log(f"Critique: {critique}")
         critique_prompt = build_refinement_prompt(content, [f"HUMAN CRITIQUE: {critique}"], chapter)
-        refined = call_ollama(critique_prompt, model, num_predict=8000)
+        refined = call_ollama(critique_prompt, model, num_predict=5500)
         if refined:
             content = refined
             log("Critique applied successfully")
@@ -554,7 +568,7 @@ def build_chapter(chapter_num: int, workbook_dir: Path, model: str, force: bool,
             log(f"  - {issue}")
 
         refine_prompt = build_refinement_prompt(content, issues, chapter)
-        refined = call_ollama(refine_prompt, model, num_predict=8000)
+        refined = call_ollama(refine_prompt, model, num_predict=5500)
         if refined:  # only replace if refinement returned content
             content = refined
         else:
