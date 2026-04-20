@@ -329,17 +329,31 @@ Write all {num_chapters} chapters now. Be specific. Be concrete. Make every sect
 # ======================================================================
 
 COVER_PROMPT_EXAMPLES = """
-EXAMPLE 1 (productivity niche):
-Translucent human head shown front-facing, cool steel blue-gray tones. Brain visible inside skull split into two halves: left side chaotic tangled neural threads in dark muted colors, right side glowing organized orange geometric neural network with bright nodes. Orange energy sparks radiating outward. Deep black background. Cinematic lighting, photorealistic CGI render, dramatic contrast. No text. Professional nonfiction book cover background.
+EXAMPLE 1 (productivity niche — geometric/abstract):
+Overhead view of a desk surface with clean geometric objects — a perfect cube, sphere, and pyramid — each casting a single sharp shadow in amber light. The objects are arranged in a spiral pattern converging on a bright focal point. Deep charcoal background with subtle warm gradient. Sharp, modern, minimalist. Cinematic lighting, photorealistic CGI. No text. Professional nonfiction book cover background.
 
-EXAMPLE 2 (health niche):
-Serene human body outline in translucent teal, glowing from within with warm light. Abstract organic flowing shapes representing biological systems — circular cells, gentle waves, botanical micro-details. Deep forest green to teal gradient background. Soft volumetric lighting, calm and healing atmosphere. No text. Professional nonfiction health book cover background.
+EXAMPLE 2 (health niche — landscape/natural):
+Wide aerial view of a calm mountain lake at dawn, perfectly still water reflecting a gradient sky from deep indigo to soft coral. Thin morning mist rising from the water surface. Pine forest silhouette framing both sides. Stillness, restoration, natural rhythm. Soft volumetric lighting, photorealistic. No text. Professional nonfiction book cover background.
 
-EXAMPLE 3 (tech/security niche):
+EXAMPLE 3 (health niche — mechanical/metaphorical):
+Close-up of an intricate golden clockwork mechanism floating in dark space, gears and springs interlocking with organic vine-like tendrils wrapping through the machinery. Warm amber and deep bronze tones. Each gear pulses with soft bioluminescent light suggesting living energy. Cinematic macro photography style, shallow depth of field. No text. Professional nonfiction book cover background.
+
+EXAMPLE 4 (tech/security niche):
 Dark control room perspective: glowing circuit board patterns recede into deep space. Bright green and cyan data streams flow along geometric pathways. Central lock symbol radiates light outward against midnight blue black background. High contrast, sleek, cinematic tech aesthetic. No text. Professional cybersecurity nonfiction book cover background.
 
-EXAMPLE 4 (self-help niche):
+EXAMPLE 5 (self-help niche):
 Single beam of brilliant white-gold light breaking through dense storm clouds from above, illuminating a dramatic landscape below. Dark purple-blue storm above, warm golden light at the focal point. Rays radiating downward, volumetric god-rays effect. Inspiring, transformative, powerful visual metaphor for breakthrough. No text. Professional self-help nonfiction book cover background.
+
+EXAMPLE 6 (business/AI niche — abstract flow):
+Abstract visualization of human handwriting merging into digital light streams. Warm ink strokes on the left transition into clean luminous code particles on the right. Deep navy background with subtle grid lines fading into darkness. The merging point glows with soft white-gold energy. Cinematic, photorealistic CGI. No text. Professional nonfiction book cover background.
+
+ANTI-PATTERNS — do NOT use these overused motifs:
+- Translucent human head/brain/silhouette (overused across catalog)
+- Split-hemisphere brain imagery (too similar between books)
+- Glowing neural networks or "organized vs chaotic" brain splits
+- Generic body outlines with internal glow
+
+Instead, choose visual metaphors from: landscapes, architecture, natural objects, mechanical systems, abstract geometry, light/shadow play, aerial perspectives, macro details, weather phenomena, botanical elements.
 """
 
 

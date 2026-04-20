@@ -105,14 +105,21 @@ NICHE_PALETTES = {
     "productivity": {
         "keywords": ["productivity", "time management", "habits", "focus", "goals", "efficiency", "getting things done", "ADHD"],
         "bg_prompt": (
-            "Translucent human head shown front-facing, cool steel blue-gray tones. "
-            "Brain visible inside skull split into two halves: "
-            "left side chaotic tangled neural threads in dark muted colors, "
-            "right side glowing organized orange geometric neural network with bright nodes. "
-            "Orange energy sparks radiating outward. Deep black background. "
-            "Cinematic lighting, photorealistic CGI render, dramatic contrast. "
+            "Overhead view of a desk surface with clean geometric objects -- a perfect cube, sphere, and pyramid -- "
+            "each casting a single sharp shadow in amber light. The objects are arranged in a spiral pattern "
+            "converging on a bright focal point. Deep charcoal background with subtle warm gradient. "
+            "Sharp, modern, minimalist. Cinematic lighting, photorealistic CGI. "
             "No text. Professional nonfiction book cover background."
         ),
+        "bg_prompt_variants": [
+            (
+                "A single sharp arrow of warm orange light cutting through layered concentric rings "
+                "of dark steel blue, each ring slightly offset creating a spiral tunnel effect. "
+                "The arrow points toward a bright vanishing point. Deep black background. "
+                "Geometric, precise, directional. Cinematic lighting, photorealistic CGI. "
+                "No text. Professional nonfiction book cover background."
+            ),
+        ],
         "title_color":    "#FFFFFF",
         "subtitle_color": "#FFD580",
         "author_color":   "#FFA040",
@@ -120,18 +127,73 @@ NICHE_PALETTES = {
         "bg_dark": True,
     },
     "health": {
-        "keywords": ["health", "wellness", "gut", "sleep", "diet", "fitness", "nutrition", "weight", "fatigue"],
+        "keywords": ["health", "wellness", "gut", "sleep", "diet", "fitness", "nutrition", "weight", "fatigue", "metabolic", "bloating", "inflammation"],
         "bg_prompt": (
-            "Serene human body outline in translucent teal, glowing from within with warm light. "
-            "Abstract organic flowing shapes representing biological systems — circular cells, "
-            "gentle waves, botanical micro-details. Deep forest green to teal gradient background. "
-            "Soft volumetric lighting, calm and healing atmosphere. "
+            "Wide aerial view of a calm mountain lake at dawn, perfectly still water reflecting a gradient sky "
+            "from deep indigo to soft coral. Thin morning mist rising from the water surface. Pine forest "
+            "silhouette framing both sides. Stillness, restoration, natural rhythm. "
+            "Soft volumetric lighting, photorealistic. "
             "No text. Professional nonfiction health book cover background."
         ),
+        "bg_prompt_variants": [
+            (
+                "Close-up of an intricate golden clockwork mechanism floating in dark space, gears and springs "
+                "interlocking with organic vine-like tendrils wrapping through the machinery. Warm amber and deep "
+                "bronze tones. Each gear pulses with soft bioluminescent light suggesting living energy. "
+                "Cinematic macro photography style, shallow depth of field. "
+                "No text. Professional nonfiction health book cover background."
+            ),
+            (
+                "Macro view of a single dewdrop on a vibrant green leaf, refracting a sunrise inside it. "
+                "The dewdrop contains a miniature world of soft golden light and botanical structures. "
+                "Deep forest green bokeh background. Fresh, renewing, organic. "
+                "Soft volumetric lighting, photorealistic macro. "
+                "No text. Professional nonfiction health book cover background."
+            ),
+            (
+                "Cross-section of ancient tree rings illuminated from within, each ring glowing with a different "
+                "warm tone from pale gold to deep amber. The central heartwood pulses with bright warm light. "
+                "Dark walnut background, rich earthy tones. Cycles, longevity, natural wisdom. "
+                "Cinematic lighting, photorealistic CGI. "
+                "No text. Professional nonfiction health book cover background."
+            ),
+        ],
         "title_color":    "#FFFFFF",
         "subtitle_color": "#B2EBE0",
         "author_color":   "#80CBC4",
         "accent":         "#00BFA5",
+        "bg_dark": True,
+    },
+    "ai-productivity": {
+        "keywords": ["ai", "artificial intelligence", "automation", "chatgpt", "machine learning", "llm", "outreach", "non-tech", "brand voice", "prompt"],
+        "bg_prompt": (
+            "Abstract visualization of human handwriting merging into digital light streams. "
+            "Warm ink strokes on the left transition into clean luminous code particles on the right. "
+            "Deep navy background with subtle grid lines fading into darkness. "
+            "The merging point glows with soft white-gold energy. "
+            "Cinematic, photorealistic CGI. "
+            "No text. Professional nonfiction book cover background."
+        ),
+        "bg_prompt_variants": [
+            (
+                "A single elegant fountain pen lying on a polished obsidian surface, its ink flowing upward "
+                "and transforming into luminous fiber-optic threads that arc into a constellation pattern above. "
+                "Deep midnight blue to black gradient. Warm gold ink transitions to cool white light. "
+                "Cinematic, photorealistic CGI. "
+                "No text. Professional nonfiction book cover background."
+            ),
+            (
+                "Two hands facing each other, one made of warm terracotta clay texture, the other made of "
+                "translucent blue holographic wireframe. Between them, a bridge of golden particles flows "
+                "connecting the organic to the digital. Dark charcoal background. "
+                "Cinematic, photorealistic CGI. "
+                "No text. Professional nonfiction book cover background."
+            ),
+        ],
+        "title_color":    "#FFFFFF",
+        "subtitle_color": "#FFE0B2",
+        "author_color":   "#FFB74D",
+        "accent":         "#FF9800",
         "bg_dark": True,
     },
     "tech-security": {
@@ -239,7 +301,8 @@ def detect_niche(meta: dict, niche_override: str | None = None) -> str:
     bisac_map = {
         "HEA": "health", "FAM004": "parenting", "FAM": "parenting",
         "BUS": "business", "COM": "tech-security", "SEL016": "productivity",
-        "SEL": "self-help", "PSY": "self-help",
+        "SEL": "self-help", "PSY": "self-help", "TEC": "ai-productivity",
+        "COM012": "ai-productivity",
     }
     for prefix, niche in bisac_map.items():
         if bisac.startswith(prefix):
@@ -617,6 +680,7 @@ def build_background_prompt(palette: dict, meta: dict, book_dir: Path | None = N
     Priority:
       1. workbook/cover_prompt.txt   — generated by outliner (book-specific)
       2. niche palette bg_prompt     — category-based fallback
+         - If bg_prompt_variants exists, picks one based on title hash for diversity
       3. default palette             — catch-all
     """
     # Check for book-specific prompt file
@@ -634,12 +698,22 @@ def build_background_prompt(palette: dict, meta: dict, book_dir: Path | None = N
                     f"High quality, visually striking, suitable for a bestselling book."
                 )
             else:
-                log(f"  cover_prompt.txt found but too short ({len(custom)} chars) — using palette fallback.")
+                log(f"  cover_prompt.txt found but too short ({len(custom)} chars) -- using palette fallback.")
+
+    # Choose prompt — use variants if available, pick based on title hash
+    bg_prompt = palette["bg_prompt"]
+    variants = palette.get("bg_prompt_variants", [])
+    if variants:
+        title = meta.get("title", "")
+        variant_idx = hash(title) % (len(variants) + 1)  # +1 to include the default
+        if variant_idx > 0:
+            bg_prompt = variants[variant_idx - 1]
+            log(f"  Using bg_prompt variant {variant_idx}/{len(variants)} (title-hash selected)")
 
     # Niche palette fallback
     return (
         f"Minimalist professional nonfiction book cover background art. "
-        f"{palette['bg_prompt']} "
+        f"{bg_prompt} "
         f"Abstract, elegant, modern design. "
         f"No text, no letters, no words, no numbers, no title. "
         f"Pure atmospheric background artwork only. "
