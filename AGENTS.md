@@ -52,7 +52,8 @@ DISCOVERY → OUTLINE → DRAFT (parallel) → AUTO-PROMOTE → COVER → PACKAG
 
 When a user sends a message on Telegram, interpret these patterns:
 - A **number** alone (e.g. "2", "3") = pick that topic from the latest plan, auto-queue AND auto-start the pipeline
-- "topics" or "what topics" = show the current topic candidates
+- "plan" or "research" = run the topic planner (researcher + scorer + ranker), then auto-send the numbered pick-list to Telegram
+- "topics" or "what topics" = show the current topic candidates (if stale, suggest running "plan" first)
 - "status" or "pipeline status" = check what's running, how many chapters done
 - "queue" = show approved_topics.md
 - "cover" or "regenerate cover" = re-run cover generator
